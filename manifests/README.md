@@ -8,7 +8,7 @@ Exact source revisions the patch series in `patches/<target>/` were made against
 | `lineage21.xml` | `lineage21` | `lineage-21.0` (security patch level 2026-09-01) |
 | `aosp15.xml` | `aosp15` | `android15-security-release` |
 | `aosp16.xml` | `aosp16` | `android16-security-release` |
-| `aosp17.xml` | `aosp17` | `android17-security-release` — pinned manifest not published yet; sync the branch and check out the base revisions listed in `patches/aosp17/BASES` |
+| `aosp17.xml` | `aosp17` | `android17-security-release` |
 
 Use one with a local manifest file:
 

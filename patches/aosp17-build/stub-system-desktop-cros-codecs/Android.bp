@@ -1,0 +1,22 @@
+// WSA-Reborn: stub in place of the project platform/system/desktop/cros-codecs, which is missing from the
+// published android17-security-release manifest (the project does not exist on android.googlesource.com),
+// although external/rust/cros-libva imports a module type from here. Without it Soong fails while analysing the tree.
+// Declares only the module type with the properties cros-libva uses; the variable is unset, so Intel
+// protected content is not enabled. See docs/patches.md.
+
+soong_config_module_type {
+    name: "rust_defaults_cros_codecs_protected_content",
+    module_type: "rust_defaults",
+    config_namespace: "cros_codecs",
+    variables: ["protected_content"],
+    properties: [
+        "cflags",
+        "features",
+        "header_libs",
+    ],
+}
+
+soong_config_string_variable {
+    name: "protected_content",
+    values: ["intel"],
+}

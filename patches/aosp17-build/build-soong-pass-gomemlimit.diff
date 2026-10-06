@@ -1,0 +1,18 @@
+diff --git a/ui/build/soong.go b/ui/build/soong.go
+index 4521b4a..8a4421f 100644
+--- a/ui/build/soong.go
++++ b/ui/build/soong.go
+@@ -230,6 +230,13 @@ func (pb PrimaryBuilderFactory) primaryBuilderInvocation(config Config) bootstra
+ 		// https://github.com/golang/proposal/blob/master/design/24543-non-cooperative-preemption.md
+ 		invocationEnv["GODEBUG"] = "asyncpreemptoff=1"
+ 	}
++	// Build-machine tweak, not a platform patch: on ~16 GB of RAM the A17 analysis runs out of memory —
++	// pass the Go GC settings through to soong_build, which is started with env -i.
++	for _, k := range []string{"GOGC", "GOMEMLIMIT"} {
++		if v, ok := os.LookupEnv(k); ok {
++			invocationEnv[k] = v
++		}
++	}
+ 
+ 	var allArgs []string
+ 	allArgs = append(allArgs, pb.specificArgs...)
