@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
 Date: Fri, 2 Oct 2026 09:11:55 +0000
 Subject: [PATCH 2/3] WSA: 0011 for A17 - DisplayAreaPolicy.Provider.instantiate takes ImeContainer instead of DisplayArea.Tokens, 2026-10-02
 

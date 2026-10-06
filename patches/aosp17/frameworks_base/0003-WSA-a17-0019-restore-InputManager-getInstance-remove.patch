@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
 Date: Fri, 2 Oct 2026 20:05:48 +0000
 Subject: [PATCH 3/3] WSA: a17/0019 - restore InputManager.getInstance() (removed in A17, needed by Microsoft SystemApp), 2026-10-02
 

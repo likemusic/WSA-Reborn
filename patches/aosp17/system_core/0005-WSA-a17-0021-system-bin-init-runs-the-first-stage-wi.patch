@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
 Date: Sat, 3 Oct 2026 07:09:55 +0000
 Subject: [PATCH 5/5] WSA a17/0021: /system/bin/init runs the first stage without arguments again (as before Android 17) - for WSA and the MagiskOnWSALocal second-stage hijack
 

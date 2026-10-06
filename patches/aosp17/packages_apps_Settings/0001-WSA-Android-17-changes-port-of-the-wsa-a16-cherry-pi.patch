@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
 Date: Wed, 30 Sep 2026 23:30:41 +0000
 Subject: [PATCH] WSA: Android 17 changes (port of the wsa-a16 cherry-pick; a16/0017 not needed - the platform removes the crop itself; 0010 fs_mgr is in system/fs/fs_mgr), 2026-10-02
 
