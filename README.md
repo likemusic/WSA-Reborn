@@ -1,6 +1,6 @@
-# {{NAME}} — Android 14–17 for Windows Subsystem for Android™
+# WSA-Reborn — Android 14–17 for Windows Subsystem for Android™
 
-{{NAME}} replaces the Android 13 guest of Windows Subsystem for Android™ (WSA, last build `2407.40000.4.0`) with Android 14, 15, 16 or 17 built from AOSP or LineageOS sources — keeping Microsoft's host, kernel and frozen `vendor` image untouched.
+WSA-Reborn replaces the Android 13 guest of Windows Subsystem for Android™ (WSA, last build `2407.40000.4.0`) with Android 14, 15, 16 or 17 built from AOSP or LineageOS sources — keeping Microsoft's host, kernel and frozen `vendor` image untouched.
 
 > **Not affiliated with Microsoft or Google.** Windows and Windows Subsystem for Android are trademarks of Microsoft Corporation. Android is a trademark of Google LLC. This project ships **no Microsoft binaries**: you bring your own WSA installation.
 
@@ -29,7 +29,7 @@ Tested on every Win11 x64 asset of WSABuilds LTS #8 (plain, Magisk, Magisk + GAp
 
 ## How it works
 
-WSA's host (`WsaClient.exe`, `WsaService`) talks to the guest over ~26 protobuf "RCM" channels on vsock. On Android 13 the guest side lives in Microsoft's `SystemUIApp`/`UserApp`, which do not run on 14+. {{NAME}} provides:
+WSA's host (`WsaClient.exe`, `WsaService`) talks to the guest over ~26 protobuf "RCM" channels on vsock. On Android 13 the guest side lives in Microsoft's `SystemUIApp`/`UserApp`, which do not run on 14+. WSA-Reborn provides:
 
 - **a guest bridge** (`WsaShellBridge`) — a clean-room re-implementation of the guest side of these channels;
 - **platform patches** for AOSP 14–17 (SCSI addressing in `fs_mgr`, SurfaceFlinger layer metadata, compatibility fixes for Microsoft's `SystemApp`, first-stage init on 17, …), each documented with why it is needed and on which versions;
@@ -44,10 +44,11 @@ WSA's host (`WsaClient.exe`, `WsaService`) talks to the guest over ~26 protobuf 
 
 ## Getting started
 
-See [docs/build.md](docs/build.md) (build a system image), [docs/install.md](docs/install.md) (put it into your WSA) and [docs/architecture.md](docs/architecture.md).
+See [docs/build.md](docs/build.md) (build a system image), [docs/install.md](docs/install.md) (put it into your WSA), [docs/architecture.md](docs/architecture.md) (how it works), [docs/protocol.md](docs/protocol.md) (host channels) and [docs/patches.md](docs/patches.md) (every platform patch and why).
 
 ## Legal
 
-- Our code is licensed under {{LICENSE}}. AOSP/LineageOS patches follow the license of the patched project.
-- No Microsoft, Intel or Google binaries are in this repository. Protocol schemas used by the bridge are extracted at build time from **your** copy of `WsaClient.exe` (`bin/proto-from-wsaclient.py`), for interoperability.
+- Our code is licensed under the Apache License 2.0 (see [LICENSE](LICENSE)). AOSP/LineageOS patches follow the license of the patched project.
+- No Microsoft, Intel or Google binaries are in this repository. Microsoft components the images need (`SystemApp`, the ARM translator, etc.) are copied by the scripts from **your own** WSA install at build time.
+- The bridge's protocol schemas (`device/microsoft/wsa_x86_64/WsaShellBridge/proto/`) are our own interoperability descriptions of the host's channels: field numbers and types follow what the host expects on the wire.
 - This is an independent interoperability project for a product Microsoft no longer supports.

@@ -37,57 +37,19 @@ fi
 git config --global user.email >/dev/null 2>&1 || git config --global user.email "build@wsa-reborn.local"
 git config --global user.name  >/dev/null 2>&1 || git config --global user.name  "wsa build"
 
-echo "== 1. syncing vanilla AOSP ($TAG) into $TREE =="
+echo "== 1. syncing AOSP ($TAG, pinned manifest manifests/aosp14.xml) into $TREE =="
 mkdir -p "$TREE"; cd "$TREE"
-# On 24.09.2026, before the compute instance was deleted, the tree's .repo (30 GB, tag r75) was saved to the Block Storage volume.
-# If it exists, the tree is checked out from it without network (minutes instead of a ~40-minute sync).
-REPO_CACHE="${REPO_CACHE:-/build/aosp-14-repo/.repo}"
-if [ ! -d "$TREE/.repo" ] && [ -d "$REPO_CACHE" ] && [ "$TAG" = "android-14.0.0_r75" ]; then
-    echo "  .repo taken from the volume: $REPO_CACHE"
-    cp -a "$REPO_CACHE" "$TREE/.repo"
-    python3 "$TREE/.repo/repo/repo" sync -l -c -j8
-else
-    python3 "$REPO_BIN" init -u https://android.googlesource.com/platform/manifest -b "$TAG" --depth=1
-    python3 "$REPO_BIN" sync -c -j8 --no-tags --no-clone-bundle --optimized-fetch --prune
-fi
+python3 "$REPO_BIN" init -u https://android.googlesource.com/platform/manifest -b "$TAG" --depth=1
+cp "$SELF_DIR/manifests/aosp14.xml" "$TREE/.repo/manifests/wsa-pinned.xml"
+python3 "$REPO_BIN" init -m wsa-pinned.xml
+python3 "$REPO_BIN" sync -c -j8 --no-tags --no-clone-bundle --optimized-fetch --prune
 
 echo "== 2. our device tree =="
 mkdir -p "$TREE/device/microsoft"
 rsync -a --delete "$SELF_DIR/device/microsoft/wsa_x86_64/" "$TREE/device/microsoft/wsa_x86_64/"
 
-echo "== 3. patches (order matters: 0008 applies on context introduced by 0006) =="
-# "dir | -p level | file" triple: some patches have paths from the tree root, some from the project.
-apply() {
-    local dir="$1" strip="$2" patch="$3"
-    [ -f "$SELF_DIR/docs/patches/$patch" ] || { echo "  missing patch: $patch" >&2; return 1; }
-    if (cd "$TREE/$dir" && patch -p"$strip" --forward --silent < "$SELF_DIR/docs/patches/$patch"); then
-        echo "  applied: $patch"
-    else
-        # --forward stays silent if already applied; tell that apart from a real error
-        (cd "$TREE/$dir" && patch -p"$strip" --reverse --dry-run --silent < "$SELF_DIR/docs/patches/$patch") \
-            && echo "  already applied: $patch" || { echo "  ERROR: $patch" >&2; return 1; }
-    fi
-}
-apply .                 0 0003-settings-devsettings-alias.diff
-apply .                 0 0004-ethernet-relax-checks.diff
-apply .                 0 0005-networkcapabilities-relax-specifier.diff
-apply frameworks/native 1 0006-surfaceflinger-inherit-wsa-metadata.diff
-apply frameworks/base   1 0007-wmshell-host-window-decor.diff
-apply frameworks/native 1 0008-surfaceflinger-hide-taskless-statusbar.diff
-apply frameworks/base   1 0009-appops-legacy-onopnoted-for-systemapp.diff
-# 0010 is mandatory: without it first-stage init cannot resolve the SCSI=H:C:T:L addresses in the WSA fstab,
-# does not mount /vendor and goes into InitFatalReboot — exactly where the first build of the
-# vanilla tree stopped on 23.09.2026 (until then the fix lived only in the tree on the build machine).
-apply system/core       1 0010-fs-mgr-wsa-scsi-address.diff
-# 0012: Toast is shown by Windows — SystemUI forwards it to the WsaShellBridge bridge ("Notification" channel).
-apply frameworks/base   1 0012-systemui-toast-to-windows.diff
-
-echo "== 3b. new files (not diffs) =="
-# The device/microsoft/wsa_x86_64 overlay sets config_deviceSpecificDisplayAreaPolicyProvider; without
-# the class itself system_server goes into a crash loop (ClassNotFoundException), verified 23.09.2026.
-install -D -m 0644 "$SELF_DIR/docs/patches/0011-wsa-display-area-policy-provider.java" \
-    "$TREE/frameworks/base/services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java"
-echo "  installed: WsaDisplayAreaPolicyProvider.java"
+echo "== 3. patches (patches/aosp14, git am per project) =="
+"$SELF_DIR/bin/apply-patches.sh" aosp14 "$TREE"
 
 cat <<TXT
 

@@ -28,14 +28,8 @@ for p in "${PAIRS[@]}"; do
 done
 mkdir -p "$WORK"
 
-suffix_of() {   # slot file suffix — from switch-build.sh, so the table is not duplicated
-    sed -n "s/^    \[$1\]=\"\(.*\)\"$/\1/p" "$HERE/bin/switch-build.sh" | grep '^\.' | head -1
-}
-
 for slot in "$@"; do
-    sfx="$(suffix_of "$slot")"
-    [ -n "$sfx" ] || { echo "$slot: suffix not found in switch-build.sh" >&2; exit 1; }
-    file="$WSA_DIR/system_ext.vhdx$sfx"
+    file="$WSA_DIR/system_ext.vhdx.$slot"   # slot naming of bin/switch-build.sh
     [ -w "$file" ] || { echo "$slot: no file $file" >&2; exit 1; }
     img="$WORK/system_ext.$slot.img"
     echo "== $slot ($file)"

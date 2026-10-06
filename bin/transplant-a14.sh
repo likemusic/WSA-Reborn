@@ -56,7 +56,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 SEPOLICY_DIR="$REPO/device/microsoft/wsa_x86_64/sepolicy"
 INIT_DIR="$REPO/device/microsoft/wsa_x86_64/overlay-init"
-BT="${BUILD_TOOLS:-$HOME/Android/Sdk/build-tools/34.0.0}"
+BT="${BUILD_TOOLS:-$(wsa_build_tools)}"
 KEY="$SECDIR/platform.pk8"; CERT="$SECDIR/platform.x509.pem"
 
 for t in debugfs e2fsck resize2fs dumpe2fs; do command -v $t >/dev/null || { echo "$t not found (package e2fsprogs)" >&2; exit 1; }; done

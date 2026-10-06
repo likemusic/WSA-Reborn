@@ -27,6 +27,7 @@
 #     add classes.dex;
 #   * apksigner signs with the v3 scheme; zipalign goes BEFORE signing, otherwise the signature breaks.
 set -euo pipefail
+. "$(dirname "$0")/wsa-env.sh"
 
 APP_DIR="${1:?app directory, e.g. testapps/ClipTest}"
 INSTALL=0
@@ -120,5 +121,5 @@ echo "-- done: $OUT/$NAME.apk ($(stat -c%s "$OUT/$NAME.apk") bytes)"
 
 if [ "$INSTALL" = 1 ]; then
     ADB=$(command -v adb || echo "$SDK/platform-tools/adb")
-    "$ADB" install -r "$OUT/$NAME.apk"
+    "$ADB" ${WSA_ADB:+-s "$WSA_ADB"} install -r "$OUT/$NAME.apk"
 fi

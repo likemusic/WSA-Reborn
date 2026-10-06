@@ -50,5 +50,5 @@ for _ in $(seq 1 600); do
 done
 rm -f "$AGENT/request.txt"
 echo "the agent did not respond within 300 s — run as administrator:" >&2
-echo "  powershell -ExecutionPolicy Bypass -File C:\\WSA-variants\\agent\\wsa-register-agent.ps1" >&2
+echo "  powershell -ExecutionPolicy Bypass -File $(wslpath -w "$AGENT/wsa-register-agent.ps1")" >&2
 exit 1
