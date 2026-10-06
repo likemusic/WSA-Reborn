@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: WSA-Reborn <noreply@wsa-reborn.invalid>
+Date: Thu, 1 Oct 2026 14:43:29 +0000
+Subject: [PATCH] WSA: Android 14 r75 changes (docs/patches/vps-tree-snapshot-20260929/aosp14 + a16/0016, a16/0017), 2026-10-01
+
+Change-Id: Iaa67f62c9a3271a8abac154615951833a8e40d8d
+---
+ AndroidManifest.xml | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/AndroidManifest.xml b/AndroidManifest.xml
+index aed51f3e..12947885 100644
+--- a/AndroidManifest.xml
++++ b/AndroidManifest.xml
+@@ -3021,6 +3021,22 @@
+                        android:value="true" />
+         </activity>
+ 
++        <!-- WSA: Microsoft SystemApp (com.microsoft.windows.systemapp,
++             SettingsRedirectionHandler.setDeveloperMode) expects the class name
++             Settings$DevelopmentSettingsDashboardActivity (a naming convention newer than the one AOSP
++             had at the time of this LineageOS fork - "Dashboard"
++             in the class name of the activity itself, not only the fragment). Without the alias
++             SystemApp crashes with IllegalArgumentException on EVERY attempt
++             to sync the Developer Options state with Windows, never getting to
++             network setup. See docs/findings.md, wsa-lineage, 2026-09-18. -->
++        <activity-alias
++            android:name="Settings$DevelopmentSettingsDashboardActivity"
++            android:targetActivity="Settings$DevelopmentSettingsActivity"
++            android:label="@string/development_settings_title"
++            android:icon="@drawable/ic_settings_development"
++            android:exported="true">
++        </activity-alias>
++
+         <activity
+             android:name="Settings$PrintSettingsActivity"
+             android:label="@string/print_settings"

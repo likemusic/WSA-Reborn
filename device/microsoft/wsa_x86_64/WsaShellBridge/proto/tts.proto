@@ -1,0 +1,52 @@
+// Protocol of the "TextToSpeech" channel: speech synthesis with Windows voices.
+//
+// All requests come from the guest: list of voices (GetVoices) and speak text (SynthesizeText). The host
+// replies with the same message with result and the filled-in response; audio arrives whole in one buffer.
+// The host sends no requests itself. At Microsoft the guest half is LatteTextToSpeechService and
+// TextToSpeechRedirectionHandler from UserApp.apk; the schema is checked against the descriptor from WsaClient.exe
+// (bin/proto-from-wsaclient.py). Analysis — docs/wsa-shell-protocol.md, the TextToSpeech channel section.
+syntax = "proto2";
+
+// Own package: other channels also have MessageType. The package name does not go on the wire.
+package wsa.rcm.tts;
+
+option java_package = "org.wsalineage.shellbridge.proto";
+option java_outer_classname = "Tts";
+
+message SynthesizeText {
+  message Output {
+    required bytes audio_buffer = 1;
+    required int32 sample_rate_hz = 2;
+  }
+  required string text = 1;
+  // Windows voice name, as in GetVoices.Voice.name.
+  optional string voice_name = 2;
+  // pitch and speech_rate — in Android units: 100 is normal.
+  optional int32 pitch = 3;
+  optional int32 speech_rate = 4;
+  optional double volume = 5;
+  // Filled in by the host in the reply.
+  optional Output output = 6;
+}
+
+message GetVoices {
+  message Voice {
+    required string name = 1;
+    // BCP 47, e.g. ru-RU.
+    required string language_tag = 2;
+  }
+  // Filled in by the host in the reply.
+  repeated Voice voices = 1;
+}
+
+message TextToSpeechMessage {
+  enum MessageType {
+    SynthesizeText = 0;
+    GetVoices = 1;
+  }
+  required MessageType message_type = 1;
+  // Filled in by the host in the reply.
+  optional bool result = 2;
+  optional SynthesizeText synthesize_text = 3;
+  optional GetVoices get_voices = 4;
+}

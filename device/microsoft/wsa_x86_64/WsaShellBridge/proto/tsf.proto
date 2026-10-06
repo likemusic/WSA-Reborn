@@ -1,0 +1,102 @@
+// Protocol of the "TSF" channel: text input via the Windows text service (Text Services Framework).
+//
+// The guest keeps in the host a mirror of the text of the focused input field (Client*), and the host
+// sends edits made by Windows: typing in the current layout, IME composition, emoji,
+// dictation (Remote*). At Microsoft the guest half is TsfRedirectionHandler and the input method
+// MicrosoftInputMethod from UserApp.apk; the schema is checked against the descriptor from WsaClient.exe
+// (bin/proto-from-wsaclient.py). Analysis — docs/wsa-shell-protocol.md, the "TSF" channel section.
+syntax = "proto2";
+
+package wsa.rcm.tsf;
+
+option java_package = "org.wsalineage.shellbridge.proto";
+option java_outer_classname = "Tsf";
+
+// Range in UTF-16 units, as in Android and in Windows.
+message TextRange {
+  required int32 begin = 1;
+  optional int32 end = 2;
+}
+
+// Guest -> host: field state. Sent on focus change (nested in FocusRequest) and on
+// every text change in the field itself. replacement says which piece of the previous text was replaced
+// by text; without it text is the whole field text.
+message ClientText {
+  required uint32 control_id = 1;
+  optional TextRange replacement = 2;
+  optional string text = 3;
+  optional TextRange selection = 4;
+}
+
+// Host -> guest: replace a piece of the field text. Without replacement — insert into the current selection.
+message RemoteText {
+  required uint32 control_id = 1;
+  optional TextRange replacement = 2;
+  optional string text = 3;
+  optional TextRange selection = 4;
+}
+
+// Host -> guest: mark a piece as IME composition (underlined) text.
+message TagRemoteText {
+  required TextRange range = 1;
+  optional uint32 control_id = 2;
+}
+
+message Selection {
+  required TextRange range = 1;
+}
+
+// Guest -> host: where the cursor is (in guest screen pixels) — Windows shows the IME candidate window
+// and the emoji panel there.
+message CursorLocation {
+  required float x = 1;
+  required float y = 2;
+}
+
+// Guest -> host: focus moved into a field (new control_id) or left it (previous control_id,
+// no client_text). input_scope — Windows InputScope, the touch keyboard depends on it.
+message FocusRequest {
+  optional uint32 input_scope = 1 [default = 0];
+  optional bool multi_line = 2 [default = false];
+  optional ClientText client_text = 3;
+  optional uint32 control_id = 4;
+  // The field does not expose its whole text (getExtractedText == null): the host sees only the area around the cursor.
+  optional bool partial_text = 5 [default = false];
+}
+
+// Host -> guest: composition started (state != 0) or ended.
+message CompositionState {
+  optional uint32 control_id = 1;
+  optional uint32 state = 2;
+}
+
+// Host -> guest: a key went to the app bypassing TSF (arrows, Backspace, Enter). The key itself
+// arrives over the "UserInput" channel (the reference behaves this way); here it is a cue to resync the field with the mirror.
+message RemoteKey {
+  required uint32 key_code = 1;
+  required bool key_down = 2;
+}
+
+message TsfMessage {
+  enum MessageType {
+    TagRemoteText = 1;
+    SetRemoteSelection = 2;
+    SetRemoteCompositionState = 3;
+    SetRemoteText = 4;
+    RemoteKeyboard = 5;
+    SetClientFocus = 101;
+    SetClientSelection = 102;
+    SetClientText = 103;
+    SetClientCursorLocation = 104;
+  }
+  required MessageType message_type = 1;
+  optional TagRemoteText tag_remote_text = 2;
+  optional Selection remote_selection = 3;
+  optional Selection client_selection = 4;
+  optional FocusRequest client_focus = 5;
+  optional RemoteText remote_text = 6;
+  optional ClientText client_text = 7;
+  optional CompositionState composition_state = 8;
+  optional CursorLocation cursor_location = 9;
+  optional RemoteKey remote_key = 10;
+}

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Allowlist of WsaShellBridge privileged permissions. Without it system_server crashes when
+     scanning the package ("Signature|privileged permissions not in privapp-permissions allowlist")
+     — the same check that caught SystemApp on 18.09.2026; it is static and does not depend on
+     ro.control_privapp_permissions. -->
+<permissions>
+    <privapp-permissions package="org.wsalineage.shellbridge">
+        <permission name="android.permission.WRITE_SECURE_SETTINGS"/>
+        <permission name="android.permission.FORCE_STOP_PACKAGES"/>
+        <!-- The "Apps" channel; levels checked against framework-res of the 2407.40000.4.0 reference. -->
+        <permission name="android.permission.PACKAGE_USAGE_STATS"/>
+        <permission name="android.permission.DELETE_PACKAGES"/>
+        <permission name="android.permission.OVERRIDE_COMPAT_CHANGE_CONFIG_ON_RELEASE_BUILD"/>
+        <!-- The "FileSystem" channel: the cache group for /mnt/shared_tmp. -->
+        <permission name="android.permission.ACCESS_CACHE_FILESYSTEM"/>
+        <!-- The "SystemMediaControls" channel: media sessions of all apps. -->
+        <permission name="android.permission.MEDIA_CONTENT_CONTROL"/>
+    </privapp-permissions>
+</permissions>

@@ -1,0 +1,151 @@
+// Protocol of the "FileSystem" channel: files between Android and Windows.
+//
+// Guest → host: send a file to Windows (FileTransferRequest in chunks, launch — open it there),
+// open in Windows a file that already lies in the shared folder (OpenSharedFile), ask the host for
+// a Windows file by GUID (ProvideContentFile) and for its name and size (ProvideContentFileDetails),
+// report that the external storage scan has finished (ExternalStorageMediaScanFinished),
+// create a temporary file in /mnt/shared_tmp (CreateSharedTempFile) and ask whether a package may be installed
+// (PackageVerificationRequest).
+// Host → guest: the next chunk is accepted (FileTransferResult), does the guest see the shared folder
+// (FolderSharingTestRequest), rescan such-and-such shared-folder file (MediaScanRequest), the decision on
+// a package install (PackageVerificationResult).
+//
+// File bytes from Windows do not travel through the channel: the host puts the file into /mnt/shared_tmp/content/<GUID>
+// (virtiofs, the `shared_tmp` line in fstab.*.windows) and replies only "done". In the other direction
+// the content travels through the channel, in the fileContents field.
+//
+// The schema is taken from the host WsaClient.exe (bin/proto-from-wsaclient.py, file FileSystem.proto) —
+// these are Microsoft's genuine field numbers and enum values. Names are adapted to our style
+// (camelCase); names do not go on the wire. Guest reference — FileSystemRedirectionHandler,
+// FileTransferInstance and WindowsContentProvider from UserApp.apk; analysis and differences of our implementation —
+// docs/wsa-shell-protocol.md, section "The "FileSystem" channel".
+syntax = "proto2";
+
+package wsa.rcm.filesystem;
+
+option java_package = "org.wsalineage.shellbridge.proto";
+option java_outer_classname = "FileSystem";
+
+import "common.proto";
+
+// Host reply to the next chunk: succeeded=false — stop the transfer.
+message FileTransferResult {
+  required int64 cookie = 1;
+  required bool succeeded = 2;
+  optional bool cancel = 3;
+  optional string errorMessage = 4;
+}
+
+// A file chunk the guest sends to Windows. cookie is a random number shared by all
+// chunks of one file. The last message of a transfer is an empty chunk with transferComplete=true.
+message FileTransferRequest {
+  required int64 cookie = 1;
+  required string fileName = 2;
+  required bytes fileContents = 3;
+  required int64 fileOffset = 4;
+  required int64 fileSize = 5;
+  required bool transferComplete = 6;
+  required bool transferError = 7;
+  required bool launch = 8;       // open the file in Windows once it arrives
+}
+
+// A file in the Windows shared folder, path relative to its root.
+message SharedFilePath {
+  enum Folder {
+    UserProfile = 0;  // the Windows user folder, on the guest — /sdcard/Windows
+  }
+  required Folder folder = 1;
+  required string relativePath = 2;
+}
+
+// The host put a probe file into the shared folder and asks whether the guest sees it.
+message FolderSharingTestRequest {
+  required SharedFilePath testFile = 1;
+}
+
+message FolderSharingTestResult {
+  required SharedFilePath testFile = 1;
+  required bool succeeded = 2;
+}
+
+// A shared-folder file changed on the Windows side: reindex it in MediaStore.
+message MediaScanRequest {
+  required SharedFilePath filePath = 1;
+  required bool shouldExist = 2;
+}
+
+// Open in Windows a file that already lies in the shared folder — without transferring bytes.
+message OpenSharedFile {
+  required SharedFilePath filePath = 1;
+  required bool launch = 2;
+}
+
+// Request for a temporary file in /mnt/shared_tmp/<subfolderPath>; the host returns the name in the reply.
+message CreateSharedTempFile {
+  required string subfolderPath = 1;
+  optional string tempFileName = 2;
+}
+
+message PackageVerificationRequest {
+  required int32 verificationId = 1;
+  repeated string apkFileNames = 2;
+  required string packageName = 3;
+  required int32 versionCode = 4;
+  required int64 longVersionCode = 5;
+  required string installerPackageName = 6;
+  required int32 sessionId = 7;
+}
+
+message PackageVerificationResult {
+  required int32 verificationId = 1;
+  required bool allowInstall = 2;
+}
+
+// Ask the host to put the Windows file with this GUID into /mnt/shared_tmp/content/<GUID>.
+message ProvideContentFile {
+  required string fileGuid = 1;
+}
+
+message ProvideContentFileResult {
+  required bool result = 1;
+}
+
+// Name and size of a Windows file by GUID: a request with only fileGuid, a reply with the fields filled in.
+message ProvideContentFileDetails {
+  required string fileGuid = 1;
+  optional string fileName = 2;
+  optional int64 fileSize = 3;
+}
+
+message FileSystemMessage {
+  enum MessageType {
+    None = 0;
+    FileTransferRequest = 1;
+    FileTransferResult = 2;
+    FolderSharingTestRequest = 3;
+    FolderSharingTestResult = 4;
+    MediaScanRequest = 5;
+    ExternalStorageMediaScanFinished = 6;
+    OpenSharedFile = 7;
+    CreateSharedTempFile = 8;
+    PackageVerificationRequest = 9;
+    PackageVerificationResult = 10;
+    ProvideContentFile = 11;
+    ProvideContentFileResult = 12;
+    ProvideContentFileDetails = 13;
+  }
+  required MessageType messageType = 1;
+  optional ActivityId activityId = 2;
+  optional FileTransferRequest fileTransferRequest = 3;
+  optional FileTransferResult fileTransferResult = 4;
+  optional FolderSharingTestRequest folderSharingTestRequest = 5;
+  optional FolderSharingTestResult folderSharingTestResult = 6;
+  optional MediaScanRequest mediaScanRequest = 7;
+  optional OpenSharedFile openSharedFile = 8;
+  optional CreateSharedTempFile createSharedTempFile = 9;
+  optional PackageVerificationRequest packageVerificationRequest = 10;
+  optional PackageVerificationResult packageVerificationResult = 11;
+  optional ProvideContentFile provideContentFile = 12;
+  optional ProvideContentFileResult provideContentFileResult = 13;
+  optional ProvideContentFileDetails provideContentFileDetails = 14;
+}

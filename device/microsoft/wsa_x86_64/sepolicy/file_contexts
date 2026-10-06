@@ -1,0 +1,1 @@
+/system_ext/bin/wsa_mount_shared_folder  u:object_r:vold_exec:s0

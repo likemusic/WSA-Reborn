@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.wsalineage.ttstest">
+    <!-- Visibility of speech synthesis engines (since Android 11 other apps' packages are hidden). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+    <!-- debuggable — to pull the WAV via run-as. -->
+    <application android:label="TtsTest" android:allowBackup="false" android:debuggable="true">
+        <activity android:name=".MainActivity" android:exported="true" android:label="TtsTest" />
+    </application>
+</manifest>

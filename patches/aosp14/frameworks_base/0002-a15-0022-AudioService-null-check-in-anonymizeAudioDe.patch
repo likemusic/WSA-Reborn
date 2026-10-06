@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: WSA-Reborn <noreply@wsa-reborn.invalid>
+Date: Mon, 5 Oct 2026 13:13:34 +0000
+Subject: [PATCH 2/2] a15/0022: AudioService null check in
+ anonymizeAudioDeviceAttributesUnchecked (GMS Nearby NPE)
+
+Change-Id: I6f03e0e27552b1365e915f0eb1cf2e9100bf14fb
+---
+ services/core/java/com/android/server/audio/AudioService.java | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/audio/AudioService.java b/services/core/java/com/android/server/audio/AudioService.java
+index d4f04b5ad..4b07ebe9b 100644
+--- a/services/core/java/com/android/server/audio/AudioService.java
++++ b/services/core/java/com/android/server/audio/AudioService.java
+@@ -10742,7 +10742,7 @@ public class AudioService extends IAudioService.Stub
+ 
+     private AudioDeviceAttributes anonymizeAudioDeviceAttributesUnchecked(
+             AudioDeviceAttributes ada) {
+-        if (!AudioSystem.isBluetoothDevice(ada.getInternalType())) {
++        if (ada == null || !AudioSystem.isBluetoothDevice(ada.getInternalType())) {
+             return ada;
+         }
+         AudioDeviceAttributes res = new AudioDeviceAttributes(ada);

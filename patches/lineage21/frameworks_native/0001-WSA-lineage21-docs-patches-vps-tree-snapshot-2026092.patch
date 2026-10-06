@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: WSA-Reborn <noreply@wsa-reborn.invalid>
+Date: Mon, 5 Oct 2026 09:39:51 +0000
+Subject: [PATCH] WSA: lineage21 changes (docs/patches/vps-tree-snapshot-20260929/lineage21), 2026-10-05
+
+Change-Id: I8fdd52ef7db85e286b28962ff5de7ed225c1497d
+---
+ .../DisplayHardware/HWComposer.cpp            |  4 ++
+ .../FrontEnd/LayerSnapshotBuilder.cpp         | 60 ++++++++++++++++++-
+ services/surfaceflinger/Layer.cpp             | 14 +++++
+ services/surfaceflinger/SurfaceFlinger.cpp    |  7 +++
+ 4 files changed, 82 insertions(+), 3 deletions(-)
+
+diff --git a/services/surfaceflinger/DisplayHardware/HWComposer.cpp b/services/surfaceflinger/DisplayHardware/HWComposer.cpp
+index 776bcd3..d6d6635 100644
+--- a/services/surfaceflinger/DisplayHardware/HWComposer.cpp
++++ b/services/surfaceflinger/DisplayHardware/HWComposer.cpp
+@@ -1150,7 +1150,11 @@ void HWComposer::loadLayerMetadataSupport() {
+ 
+     for (const auto& [name, mandatory] : supportedMetadataKeyInfo) {
+         mSupportedLayerGenericMetadata.emplace(name, mandatory);
++        // WSA: diagnostics - which generic-metadata keys hwcomposer.windows.so declared
++        ALOGI("WSA: HWC supports layer generic metadata key %s (mandatory=%d)", name.c_str(),
++              mandatory);
+     }
++    ALOGI("WSA: HWC layer generic metadata keys: %zu", mSupportedLayerGenericMetadata.size());
+ }
+ 
+ } // namespace impl
+diff --git a/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.cpp b/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.cpp
+index 0966fe0..2d725d3 100644
+--- a/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.cpp
++++ b/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.cpp
+@@ -19,6 +19,7 @@
+ #undef LOG_TAG
+ #define LOG_TAG "SurfaceFlinger"
+ 
++#include <cstring>
+ #include <numeric>
+ #include <optional>
+ 
+@@ -294,7 +295,7 @@ bool needsInputInfo(const LayerSnapshot& snapshot, const RequestedLayerState& re
+ }
+ 
+ void updateMetadata(LayerSnapshot& snapshot, const RequestedLayerState& requested,
+-                    const LayerSnapshotBuilder::Args& args) {
++                    const LayerSnapshotBuilder::Args& args, const LayerSnapshot& parentSnapshot) {
+     snapshot.metadata.clear();
+     for (const auto& [key, mandatory] : args.supportedLayerGenericMetadata) {
+         auto compatIter = args.genericLayerMetadataKeyMap.find(key);
+@@ -311,6 +312,58 @@ void updateMetadata(LayerSnapshot& snapshot, const RequestedLayerState& requeste
+                                   compositionengine::GenericLayerMetadataEntry{mandatory,
+                                                                                it->second});
+     }
++
++    // Windows Subsystem for Android (WSA): hwcomposer.windows.so groups HWC layers into a host window
++    // by com.microsoft.wsa.taskid and distinguishes them by com.microsoft.wsa.windowtype. We export both
++    // keys REGARDLESS of the list the HAL declared via getLayerGenericMetadataKeys (as Microsoft's
++    // surfaceflinger did, see docs/findings.md 2026-09-12; on A14 the list could turn out empty).
++    static const std::pair<const char*, uint32_t> kWsaMetadataKeys[] = {
++            {"com.microsoft.wsa.taskid", gui::METADATA_TASK_ID},
++            {"com.microsoft.wsa.windowtype", gui::METADATA_WINDOW_TYPE},
++    };
++    for (const auto& [key, id] : kWsaMetadataKeys) {
++        auto it = requested.metadata.mMap.find(id);
++        if (it != std::end(requested.metadata.mMap)) {
++            snapshot.metadata[key] = compositionengine::GenericLayerMetadataEntry{false, it->second};
++        }
++    }
++    // WindowManagerService sets METADATA_TASK_ID only on the task surface (a container without
++    // a buffer) - the windows' buffer layers do not carry it. Inherit from the parent the keys the layer
++    // does not have itself (the parent has already inherited from its own parent).
++    for (const auto& [key, entry] : parentSnapshot.metadata) {
++        snapshot.metadata.try_emplace(key, entry);
++    }
++
++    // WSA: a system window layer WITHOUT a task (own or inherited) is drawn by the host as
++    // an overlay on top of the desktop if its type is in the list of valid ones in
++    // hwcomposer.windows.so (1...2000 and part of 2xxx). Microsoft has no status bar (TYPE_STATUS_BAR = 2000)
++    // in the guest, while ours lives in SystemUI - we do not hand it to the host by dropping
++    // windowtype: the HAL then treats the layer as invalid and keeps it in the guest framebuffer.
++    static constexpr int32_t kWsaHiddenTasklessWindowTypes[] = {
++            2000, // WindowManager.LayoutParams.TYPE_STATUS_BAR
++    };
++    if (snapshot.metadata.find("com.microsoft.wsa.taskid") == snapshot.metadata.end()) {
++        auto typeIt = snapshot.metadata.find("com.microsoft.wsa.windowtype");
++        if (typeIt != snapshot.metadata.end() && typeIt->second.value.size() >= sizeof(int32_t)) {
++            int32_t windowType = 0;
++            memcpy(&windowType, typeIt->second.value.data(), sizeof(windowType));
++            for (int32_t hidden : kWsaHiddenTasklessWindowTypes) {
++                if (windowType == hidden) {
++                    snapshot.metadata.erase(typeIt);
++                    break;
++                }
++            }
++        }
++    }
++
++    // FLAG_SECURE is not stored in LayerMetadata - it is a separate snapshot field; export it manually
++    // if the HAL declared the key (counterpart of the Layer.cpp change for the legacy frontend).
++    static constexpr char kWsaSecureMetadataKey[] = "com.microsoft.wsa.secure";
++    {
++        const uint8_t secureValue = snapshot.isSecure ? 1 : 0;
++        snapshot.metadata[kWsaSecureMetadataKey] =
++                compositionengine::GenericLayerMetadataEntry{false, {secureValue}};
++    }
+ }
+ 
+ void clearChanges(LayerSnapshot& snapshot) {
+@@ -782,11 +835,12 @@ void LayerSnapshotBuilder::updateSnapshot(LayerSnapshot& snapshot, const Args& a
+         }
+     }
+ 
+-    if (forceUpdate || snapshot.changes.test(RequestedLayerState::Changes::GameMode)) {
++    if (forceUpdate || snapshot.changes.test(RequestedLayerState::Changes::GameMode) ||
++        snapshot.clientChanges & layer_state_t::eFlagsChanged) {
+         snapshot.gameMode = requested.metadata.has(gui::METADATA_GAME_MODE)
+                 ? requested.gameMode
+                 : parentSnapshot.gameMode;
+-        updateMetadata(snapshot, requested, args);
++        updateMetadata(snapshot, requested, args, parentSnapshot);
+         if (args.includeMetadata) {
+             snapshot.layerMetadata = parentSnapshot.layerMetadata;
+             snapshot.layerMetadata.merge(requested.metadata);
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index 736fec6..bd3cafa 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -627,6 +627,20 @@ void Layer::prepareGeometryCompositionState() {
+                                    compositionengine::GenericLayerMetadataEntry{mandatory,
+                                                                                 it->second});
+     }
++
++    // "secure" (FLAG_SECURE) is not an entry in the standard LayerMetadata of
++    // WindowManagerService - SurfaceFlinger tracks it in a separate field
++    // (snapshot->isSecure above), so the loop over drawingState.metadata.mMap
++    // does not pick it up. Pass it manually under the WSA key if the HAL
++    // (hwcomposer.windows.so) declared it as supported.
++    static constexpr char kWsaSecureMetadataKey[] = "com.microsoft.wsa.secure";
++    auto secureIt = supportedMetadata.find(kWsaSecureMetadataKey);
++    if (secureIt != supportedMetadata.end()) {
++        const uint8_t secureValue = snapshot->isSecure ? 1 : 0;
++        snapshot->metadata.emplace(kWsaSecureMetadataKey,
++                                   compositionengine::GenericLayerMetadataEntry{
++                                           secureIt->second, {secureValue}});
++    }
+ }
+ 
+ void Layer::preparePerFrameCompositionState() {
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index e772214..ed38993 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -8735,6 +8735,13 @@ const std::unordered_map<std::string, uint32_t>& SurfaceFlinger::getGenericLayer
+     static const std::unordered_map<std::string, uint32_t> genericLayerMetadataKeyMap{
+             {"org.chromium.arc.V1_0.TaskId", gui::METADATA_TASK_ID},
+             {"org.chromium.arc.V1_0.CursorInfo", gui::METADATA_MOUSE_CURSOR},
++            // Windows Subsystem for Android (WSA): the very same already existing
++            // per-layer metadata (WindowManagerService sets it on
++            // every SurfaceControl anyway, regardless of WSA), but under the key
++            // names that hwcomposer.windows.so on the host expects, so that
++            // WsaClient.exe can match a composited layer to a guest window.
++            {"com.microsoft.wsa.taskid", gui::METADATA_TASK_ID},
++            {"com.microsoft.wsa.windowtype", gui::METADATA_WINDOW_TYPE},
+     };
+     return genericLayerMetadataKeyMap;
+ }

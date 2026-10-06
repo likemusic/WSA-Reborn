@@ -1,0 +1,11 @@
+; The IWsaNotifications service that Microsoft's SystemApp registers last during initialization
+; (on Microsoft's image SystemUIApp looks it up). Rules are verbatim from the reference system_ext_sepolicy.cil.
+; Without the type addService gets "SELinux denied", the exception aborts SystemApp initialization:
+; waitForNetworkReady/notifyInitialized are never run, while the geocoder's waitForInitialized and the heartbeat
+; of the Lifetime channel hang forever (host logcat, 27.09.2026). The same in the build is wsa_systemapp.te;
+; this file is for slots built without it (bin/transplant-a14.sh).
+(type wsa_notification_service)
+(roletype object_r wsa_notification_service)
+(allow priv_app wsa_notification_service (service_manager (find)))
+(allow system_app wsa_notification_service (service_manager (add)))
+(typeattributeset service_manager_type (wsa_notification_service))

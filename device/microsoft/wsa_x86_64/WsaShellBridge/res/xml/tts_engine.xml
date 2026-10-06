@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The WindowsTtsService speech engine. It has no settings screen of its own: voice, pitch and rate
+     are chosen in Android Settings, the set of voices in Windows. -->
+<tts-engine xmlns:android="http://schemas.android.com/apk/res/android" />

@@ -1,0 +1,26 @@
+// WsaShellBridge — our own implementation of the WSA "Shell" channel protocol (docs/wsa-shell-protocol.md).
+// Contains nothing from Microsoft images: the .proto/.aidl files were reconstructed from the wire format.
+android_app {
+    name: "WsaShellBridge",
+    srcs: [
+        "src/**/*.java",
+        "proto/*.proto",
+        "aidl/**/*.aidl",
+    ],
+    aidl: {
+        local_include_dirs: ["aidl"],
+    },
+    proto: {
+        type: "lite",
+        local_include_dirs: ["proto"],
+        canonical_path_from_root: false,
+    },
+    platform_apis: true,
+    certificate: "platform",
+    privileged: true,
+    privapp_allowlist: "privapp-permissions-wsashellbridge.xml",
+    system_ext_specific: true,
+    optimize: {
+        enabled: false,
+    },
+}

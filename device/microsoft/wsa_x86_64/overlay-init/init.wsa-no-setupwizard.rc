@@ -1,0 +1,43 @@
+# Bypass of LineageSetupWizard (diagnostics 18.09.2026, see docs/findings.md):
+# excluding the package from the build (PRODUCT_PACKAGES := $(filter-out ...)) failed —
+# the entry is re-added at a later stage of product processing, so filter-out
+# in the top-level .mk does not work here. Instead we programmatically do the same thing
+# the wizard itself does on completion (disableHome() in SetupWizardUtils.java) —
+# but earlier than the user could go through it interactively.
+#
+# seclabel u:r:shell:s0 is required (NOT u:r:system_app:s0 — that domain lacks
+# permissions for the binder calls pm needs, it fails with SecurityException/segfault).
+# user system is required (NOT shell — adb shell gets SecurityException:
+# "Shell cannot change component state", a UID check in
+# PackageManagerService, not by SELinux domain). The file /bin/wsa-no-setupwizard.sh itself
+# must carry the label u:object_r:shell_exec:s0 (not the generic system
+# system_file) — the shell domain enters the process only through an entrypoint of this
+# type.
+service wsa_no_setupwizard /system_ext/bin/wsa-no-setupwizard.sh
+    class late_start
+    user system
+    group system
+    oneshot
+    disabled
+    seclabel u:r:shell:s0
+
+# Settings — as uid shell: on Android 16 `settings put` as uid system crashes (NPE in
+# AppOpsService.checkPackage), see the script itself.
+service wsa_settings /system_ext/bin/wsa-no-setupwizard.sh settings
+    class late_start
+    user shell
+    group shell
+    oneshot
+    disabled
+    seclabel u:r:shell:s0
+
+on property:sys.boot_completed=1
+    start wsa_no_setupwizard
+    start wsa_settings
+
+# userdebug: init starts the `console` shell on the serial port (ro.debuggable=1), and
+# ActivityManager posts a persistent "Serial console enabled" notification — it
+# ends up in the Windows notification center (30.09.2026, aosp16-vanilla). We read the kernel console from the host
+# (bin/wsa-guest-console.sh), no shell on the port is needed; Microsoft stock (a user build) does not have it.
+on property:init.svc.console=running
+    stop console

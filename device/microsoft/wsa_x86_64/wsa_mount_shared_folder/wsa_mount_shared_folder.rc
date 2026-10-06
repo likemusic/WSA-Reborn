@@ -1,0 +1,17 @@
+# The Windows user folder (C:\Users\<name>) — at /sdcard/Windows, if the host provided it.
+#
+# The trigger is boot completion, not the external_storage.emulated_0.mounted property as at Microsoft:
+# that property is set by their own vold, AOSP has no such thing. By the end of boot /data/media/0 and
+# the MediaProvider directories (Documents and others) already exist. If the host did not provide the windows_user disk
+# (folder sharing is disabled in the WSA settings), the mount fails ("virtio-fs: tag not found" in the kernel log) — and that is all.
+#
+# It is not init itself that mounts: neverallow rules forbid it from mounting anything in /data/media/0,
+# so the program is labeled vold_exec and runs in the vold domain.
+on property:sys.boot_completed=1
+    mkdir /data/media/0/Windows 2770 media_rw media_rw encryption=None
+    wait /data/media/0/Documents 10
+    exec -- /system_ext/bin/wsa_mount_shared_folder windows_user /data/media/0/Windows /data/media/0/Documents
+
+on userspace-reboot-requested
+    setprop external_storage.virtiofs.enabled ""
+    setprop external_storage.windows_user.mounted ""

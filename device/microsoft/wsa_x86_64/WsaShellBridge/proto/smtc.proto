@@ -1,0 +1,94 @@
+// Protocol of the "SystemMediaControlsChannel" channel: the Windows media panel (System Media Transport
+// Controls) for Android media sessions.
+//
+// The guest reports every app with an active media session: appeared/gone (SetSmtcEnabled),
+// playback state, available buttons, title/artist, artwork. The host shows this in the
+// Windows media panel (taskbar volume flyout, lock screen) and sends back presses of its
+// buttons and media keys (MediaKeyPress). Sessions are distinguished by package name. In Microsoft's image the guest
+// half is SystemMediaControlsRedirectionHandler from UserApp.apk; the schema is checked against the descriptor from
+// WsaClient.exe (bin/proto-from-wsaclient.py). Analysis: docs/wsa-shell-protocol.md, section on the
+// SystemMediaControls channel.
+syntax = "proto2";
+
+// Own package: other channels also have Result and MessageType. The package name does not go on the wire.
+package wsa.rcm.smtc;
+
+option java_package = "org.wsalineage.shellbridge.proto";
+option java_outer_classname = "Smtc";
+
+enum PlaybackState {
+  Stopped = 1;
+  Playing = 2;
+  Paused = 3;
+  Changing = 4;
+  Closed = 5;
+}
+
+// Bit mask of available buttons (EnabledButtonsMessage) and a single pressed one (MediaKeypressMessage).
+enum MediaButtons {
+  KeyPrevious = 1;
+  KeyRewind = 2;
+  KeyPlay = 4;
+  KeyPause = 8;
+  KeyStop = 16;
+  KeyFastForward = 32;
+  KeyNext = 64;
+}
+
+enum MetadataKey {
+  AlbumArtist = 1;
+  Artist = 2;
+  Title = 3;
+}
+
+enum MessageType {
+  SetSmtcEnabled = 1;     // guest -> host
+  SetPlaybackState = 2;   // guest -> host
+  SetEnabledButtons = 3;  // guest -> host
+  SetMetadata = 4;        // guest -> host
+  SetArtwork = 5;         // guest -> host
+  MediaKeyPress = 6;      // host -> guest
+}
+
+message MediaControlsEnabledMessage {
+  required bool enabled = 1;
+}
+
+message PlaybackStateMessage {
+  required PlaybackState state = 1;
+}
+
+message EnabledButtonsMessage {
+  required uint32 enabled_buttons = 1;
+}
+
+message SetMetadataMessage {
+  required MetadataKey key = 1;
+  optional string value = 2;
+}
+
+// Artwork is an encoded image (PNG in the reference), not raw pixels.
+message SetArtworkMessage {
+  required bytes album_art_bitmap = 1;
+}
+
+message MediaKeypressMessage {
+  required MediaButtons button_pressed = 1;
+}
+
+message Result {
+  required bool succeeded = 1;
+  optional string error_message = 2;
+}
+
+message MediaTransportControlsMessage {
+  required MessageType message_type = 1;
+  required string package_name = 2;
+  optional Result result = 3;
+  optional MediaControlsEnabledMessage enabled_message = 4;
+  optional PlaybackStateMessage playback_state_message = 5;
+  optional EnabledButtonsMessage enabled_buttons_message = 6;
+  repeated SetMetadataMessage set_metadata_message = 7;
+  optional SetArtworkMessage set_artwork_message = 8;
+  optional MediaKeypressMessage button_pressed_message = 9;
+}

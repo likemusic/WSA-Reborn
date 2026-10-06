@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The WindowsInputMethod input method (the "TSF" channel). It has no settings; the input language is chosen
+     by the Windows keyboard layout, so there is a single subtype without a locale. -->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:isDefault="true">
+    <subtype
+        android:label="Windows"
+        android:imeSubtypeMode="keyboard" />
+</input-method>

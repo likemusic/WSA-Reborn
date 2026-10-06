@@ -1,0 +1,80 @@
+// Protocol of the "UserInput" channel (host -> guest): mouse, touch and keyboard into the app window.
+// In Microsoft's image the handler is UserInputRedirectionHandler in UserApp.apk: events are turned into
+// MotionEvent/KeyEvent and injected via InputManager.injectInputEvent (coordinates are in px of
+// the guest display displayId, targetTaskId is the window's task, which is brought to front on Down).
+// The reply to the host is empty (no payload). Recovered the same way as shell.proto.
+syntax = "proto2";
+
+package wsa.rcm;
+
+option java_package = "org.wsalineage.shellbridge.proto";
+option java_outer_classname = "UserInput";
+
+message ModifierKeys {
+  optional bool ctrlDown = 1;
+  optional bool shiftDown = 2;
+  optional bool altDown = 3;
+  optional bool capsLockOn = 4;
+  optional bool numLockOn = 5;
+  optional bool scrollLockOn = 6;
+  optional bool startDown = 7;
+}
+
+message MouseMessage {
+  enum MouseAction { Down = 0; Up = 1; DragMove = 2; HoverMove = 3; Scroll = 4; }
+  enum ActionButton { None = 0; Left = 1; Right = 2; Middle = 3; }
+  message ButtonState {
+    optional bool leftDown = 1;
+    optional bool rightDown = 2;
+    optional bool middleDown = 3;
+  }
+  required uint64 displayId = 1;        // wsaDisplayId ("local:100" → 100)
+  required bool emulateTouch = 2;       // true: TOUCHSCREEN source, otherwise MOUSE
+  required MouseAction mouseAction = 3;
+  required float xPosition = 4;
+  required float yPosition = 5;
+  required ActionButton actionButton = 6;
+  required ButtonState buttonState = 7;
+  optional ModifierKeys modifierKeys = 8;
+  optional float verticalScroll = 9;    // AXIS_VSCROLL
+  optional float horizontalScroll = 10; // AXIS_HSCROLL
+  optional int32 targetTaskId = 11;
+}
+
+message TouchMessage {
+  enum TouchAction { InitialDown = 0; FinalUp = 1; IntermediateDown = 2; IntermediateUp = 3; Move = 4; Cancel = 5; }
+  message TouchPointer {
+    enum ToolType { Finger = 0; Pen = 1; Eraser = 2; }
+    required uint32 pointerId = 1;
+    required float xPosition = 2;
+    required float yPosition = 3;
+    optional ToolType toolType = 4;
+    optional bool penButtonDown = 5;
+    optional float pressure = 6;
+    optional float tiltRadians = 7;
+    optional float orientationRadians = 8;
+  }
+  required uint64 displayId = 1;
+  required TouchAction touchAction = 2;
+  repeated TouchPointer touchPointers = 3;
+  optional uint32 actionPointerIndex = 4;
+  optional bool generatedGesture = 5;   // → MotionEvent.FLAG_IS_GENERATED_GESTURE
+  optional int32 targetTaskId = 6;
+}
+
+message KeyboardMessage {
+  required uint32 virtualKeyCode = 1;   // Windows VK_*
+  required bool keyDown = 2;
+  optional ModifierKeys modifierKeys = 3;
+  optional uint32 repeatCount = 4;
+  optional uint32 scanCode = 5;
+  optional int32 targetTaskId = 6;
+}
+
+message UserInputMessage {
+  enum MessageType { None = 0; MouseMessage = 1; TouchMessage = 2; KeyboardMessage = 3; }
+  required MessageType messageType = 1;
+  optional MouseMessage mouseMessage = 2;
+  optional TouchMessage touchMessage = 3;
+  optional KeyboardMessage keyboardMessage = 4;
+}

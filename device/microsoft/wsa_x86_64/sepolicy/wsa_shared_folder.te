@@ -1,0 +1,11 @@
+# Windows user folder in /sdcard/Windows: wsa_mount_shared_folder (label vold_exec, see
+# file_contexts) mounts the virtiofs disk windows_user at /data/media/0/Windows with the label
+# media_rw_data_file and sets the external_storage.* properties (property_contexts, type system_prop).
+# The rules are the same as in the reference Microsoft 2407.40000.4.0 system_ext_sepolicy.cil for their
+# mount_shared_folder, plus mounton on the directory. For slots without a tree rebuild the same thing lives
+# in wsa_shared_folder.cil and is appended by bin/add-shared-folder.sh.
+allow vold labeledfs:filesystem relabelfrom;
+allow vold media_rw_data_file:filesystem { mount relabelfrom relabelto };
+allow media_rw_data_file media_rw_data_file:filesystem associate;
+allow vold media_rw_data_file:dir mounton;
+set_prop(vold, system_prop)

@@ -1,0 +1,19 @@
+# WSA: vendor.img (Microsoft) splits boot into two phases. In post-fs-data init starts
+# /vendor/bin/sysprep_service and waits for vendor.sysprep.start_phase=1 (wait_for_prop). The host sends
+# StartPhase1 over the SysPrepChannel channel, the service sets the property, init sets current_phase=1,
+# and the service answers the host with Phase1Started.
+#
+# From 18.09.2026 to 28.09.2026 this file did `setprop vendor.sysprep.start_phase 1` on early-init.
+# Back then the handshake never completed (the host WsaClient.exe crashed by itself), and without the workaround boot
+# hung on wait_for_prop. But because of the workaround current_phase=1 was set from the very start.
+# The service thread waiting for current_phase=1 fired before the service opened the channel and
+# crashed on a null pointer (ApiChannelSync::send, address 0x8). init restarted the service every
+# 5 s, and the host never received Phase1Started (startPhase1Completed=0 in BootProgressReport vs 1 on
+# stock). Now the host sends StartPhase1 itself, so the service sets the property, as on
+# Microsoft's image. Analysis — docs/findings.md, entry of 28.09.2026 about sysprep_service.
+#
+# The service definition repeats the vendor one verbatim (disabled: it is started by init.windows_x86_64.rc).
+service sysprep_service /vendor/bin/sysprep_service
+    group system
+    user system
+    disabled

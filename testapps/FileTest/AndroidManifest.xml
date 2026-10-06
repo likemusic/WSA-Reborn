@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.wsalineage.filetest">
+    <application android:label="FileTest" android:allowBackup="false">
+        <activity android:name=".MainActivity" android:exported="true" android:label="FileTest" />
+        <!-- "Share" target: Windows sends files here via the "Intents" channel (FileShare). -->
+        <activity android:name=".ReceiveActivity" android:exported="true" android:label="FileTest">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+        <!-- Our own files to send to Windows: not exported, read access is granted by an intent flag. -->
+        <provider
+            android:name=".Files"
+            android:authorities="org.wsalineage.filetest.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>

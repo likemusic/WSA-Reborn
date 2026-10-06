@@ -1,0 +1,4 @@
+# Windows user shared folder: set by wsa_mount_shared_folder (vold domain), read by the bridge's
+# "FileSystem" channel. Names and type are as at Microsoft (system_ext_property_contexts of the reference).
+external_storage.windows_user.mounted  u:object_r:system_prop:s0 exact bool
+external_storage.virtiofs.enabled      u:object_r:system_prop:s0 exact bool

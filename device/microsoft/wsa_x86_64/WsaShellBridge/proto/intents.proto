@@ -1,0 +1,84 @@
+// Protocol of the "Intents" channel (host -> guest: launch an app from a Windows shortcut / wsa://<package>,
+// guest -> host: open a URI/calendar event/Wi-Fi in Windows). At Microsoft the handler lives in
+// UserApp.apk (IntentRedirectionHandler); only the LaunchPackage branch is implemented here, without which
+// the host shows a splash placeholder and waits forever. Recovered the same way as shell.proto.
+syntax = "proto2";
+
+package wsa.rcm;
+
+option java_package = "org.wsalineage.shellbridge.proto";
+option java_outer_classname = "Intents";
+
+import "common.proto";
+
+message Result {
+  required bool succeeded = 1;
+  optional string errorMessage = 2;
+}
+
+message LaunchUri {
+  required string uri = 1;
+  optional bool ignoreAppUri = 2;
+}
+
+message LaunchPackage {
+  enum IntentType {
+    MainLaunch = 0;  // getLaunchIntentForPackage
+    Activity = 1;    // packageName + activityName
+    Implicit = 2;    // implicitIntent.action/data
+    Shortcut = 3;    // shortcutId (LauncherApps) — not implemented
+    Install = 4;     // packagePath — Microsoft installer, not implemented
+    FileShare = 5;   // fileGuid[] — Windows files, served via WindowsFileProvider
+  }
+  message ImplicitIntent {
+    required string action = 1;
+    optional string data = 2;
+    optional bool appLink = 3;
+  }
+  required string packageName = 1;
+  required IntentType intentType = 2;
+  optional string activityName = 3;
+  optional ImplicitIntent implicitIntent = 4;
+  optional string shortcutId = 5;
+  optional string packagePath = 6;
+  repeated string fileGuid = 7;
+}
+
+message AddCalendarEvent {
+  enum AccessLevel { Public = 0; Private = 1; Confidential = 2; }
+  enum Availability { Busy = 0; Free = 1; Tentative = 2; }
+  optional string title = 1;
+  optional int64 beginTime = 2;
+  optional int64 endTime = 3;
+  optional bool allDay = 4;
+  optional string location = 5;
+  optional string description = 6;
+  repeated string attendees = 7;
+  optional string recurrenceRule = 8;
+  optional AccessLevel accessLevel = 9;
+  optional Availability availability = 10;
+}
+
+message AddWifiNetwork {
+  enum AuthenticationType { Open = 1; WPA2 = 2; }
+  required string ssid = 1;
+  required AuthenticationType authenticationType = 2;
+  optional string passphrase = 3;
+}
+
+message IntentMessage {
+  enum MessageType {
+    None = 0;
+    LaunchUri = 1;
+    LaunchPackage = 2;
+    AddCalendarEvent = 3;
+    AddWifiNetwork = 4;
+  }
+  required MessageType messageType = 1;
+  required ActivityId activityId = 2;
+  optional Result result = 3;             // guest reply: the same IntentMessage + result
+  optional LaunchUri launchUri = 4;
+  optional LaunchPackage launchPackage = 5;
+  optional AddCalendarEvent addCalendarEvent = 6;
+  repeated AddWifiNetwork addWifiNetwork = 7;
+}

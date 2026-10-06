@@ -1,0 +1,57 @@
+// RCM channel transport frame (common to all channels: "Shell", "Apps", "Settings", ...).
+// On the wire: 4 bytes little-endian length, then a serialized ApiMessageHeader of that length.
+// The channel-specific payload (ShellMessage for "Shell") is serialized into payload.
+// Recovered from com.microsoft.windows.redirection.Common$ApiMessageHeader (SystemUIApp.apk),
+// checked against the genuine schema from the host WsaClient.exe (bin/proto-from-wsaclient.py, Common.proto);
+// the other messages of that package (Dictionary, Stream, KeyValuePair, PerformanceMessage) are not used by any
+// of the implemented channels and are omitted.
+syntax = "proto2";
+
+package wsa.rcm;
+
+option java_package = "org.wsalineage.shellbridge.proto";
+option java_outer_classname = "Common";
+
+import "result_codes.proto";
+
+message ApiMessageHeader {
+  required uint64 callId = 1;          // each side has its own counter, starting at 0
+  optional bool isReply = 2;           // true: a reply to the message with the same callId
+  optional ResultCode returnCode = 3;  // absent = Success
+  optional bytes payload = 4;
+  // field 5 (performanceMessage) is telemetry; the guest does not fill it, the host does not require it
+}
+
+// Host operation identifier (GUID as a string); used in IntentMessage and ClipboardMessage.
+message ActivityId {
+  required string value = 1;
+}
+
+// Named Windows shared memory section. The guest sees it as the file
+// /mnt/shared_mem/<sectionName> (virtiofs, declared in fstab.*.windows by the `shared_mem` line),
+// maps it into memory via FileChannel.map and reads/writes at offset/size from ClipboardContentItem.
+// Used by the "Clipboard" channel: clipboard content does not travel over the RCM channel.
+message SharedMemory {
+  optional string sectionName = 1;
+  optional uint32 size = 2;
+}
+
+// A bitmap passed over the channel WHOLE (unlike the clipboard, where only a manifest goes over the
+// channel and the bytes sit in shared memory). Used by the "Notification" channel for the
+// notification icon and picture. bytes is always a PNG file: format describes the source Bitmap.Config
+// and the host uses it only as a hint, while size duplicates the length of bytes.
+message PNG {
+  enum Format {
+    ALPHA_8 = 0;
+    ARGB_4444 = 1;
+    ARGB_8888 = 2;
+    HARDWARE = 3;
+    RGBA_F16 = 4;
+    RGB_565 = 5;
+  }
+  required uint32 width = 1;
+  required uint32 height = 2;
+  required Format format = 3 [default = ARGB_8888];
+  required bytes bytes = 4;
+  required uint32 size = 5;
+}

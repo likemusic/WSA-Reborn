@@ -1,0 +1,32 @@
+// Result codes in the ApiMessageHeader header. Values are signed Windows HRESULTs (int32).
+// Recovered by static analysis of SystemUIApp.apk (WSA 2407.40000.4.0), see
+// docs/wsa-shell-protocol.md. The Java package names are ours and do not affect the wire.
+syntax = "proto2";
+
+package wsa.rcm;
+
+option java_package = "org.wsalineage.shellbridge.proto";
+option java_outer_classname = "ResultCodes";
+
+enum ResultCode {
+  Success = 0;
+  NotImpl = -2147467263;                // 0x80004001 E_NOTIMPL
+  NoInterface = -2147467262;            // 0x80004002 E_NOINTERFACE
+  Pointer = -2147467261;                // 0x80004003 E_POINTER
+  Abort = -2147467260;                  // 0x80004004 E_ABORT
+  Fail = -2147467259;                   // 0x80004005 E_FAIL
+  Unexpected = -2147418113;             // 0x8000FFFF E_UNEXPECTED
+  ChangedState = -2147483636;           // 0x8000000C E_CHANGED_STATE
+  FileNotFound = -2147024894;           // 0x80070002
+  PathNotFound = -2147024893;           // 0x80070003
+  AccessDenied = -2147024891;           // 0x80070005
+  Handle = -2147024890;                 // 0x80070006
+  OutOfMemory = -2147024882;            // 0x8007000E
+  InvalidArg = -2147024809;             // 0x80070057
+  NotReady = -2147024875;               // 0x80070015 ERROR_NOT_READY
+  NotSupported = -2147024846;           // 0x80070032 ERROR_NOT_SUPPORTED
+  Timeout = -2147024638;                // 0x80070102 WAIT_TIMEOUT
+  NotFound = -2147023728;               // 0x80070490 ERROR_NOT_FOUND
+  NotValidState = -2147019873;          // 0x8007139F ERROR_INVALID_STATE
+  InvalidProtocolFormat = -2089418750;  // 0x83760002
+}

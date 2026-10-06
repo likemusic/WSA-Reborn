@@ -1,0 +1,2 @@
+com.microsoft.windows.systemapp.IWsaSystemApp   u:object_r:wsa_systemapp_service:s0
+com.microsoft.windows.service.notifications.IWsaNotifications   u:object_r:wsa_notification_service:s0

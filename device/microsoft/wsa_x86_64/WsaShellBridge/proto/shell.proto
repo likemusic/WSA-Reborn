@@ -1,0 +1,101 @@
+// Protocol of the "Shell" channel (guest ↔ WsaClient.exe): creation, focus and geometry of Windows windows for
+// Android tasks. Field numbers, types and required/optional are taken from RawMessageInfo of the protobuf-javalite
+// classes com.microsoft.windows.redirection.Shell$* (SystemUIApp.apk, WSA 2407.40000.4.0), field
+// names — from the object table there. Semantics and sequences — docs/wsa-shell-protocol.md.
+syntax = "proto2";
+
+package wsa.rcm;
+
+option java_package = "org.wsalineage.shellbridge.proto";
+option java_outer_classname = "Shell";
+
+message Bounds {
+  required uint32 left = 1;
+  required uint32 top = 2;
+  required uint32 right = 3;
+  required uint32 bottom = 4;
+}
+
+message Size {
+  required uint32 width = 1;
+  required uint32 height = 2;
+}
+
+enum WindowMode {
+  Freeform = 1;          // WINDOWING_MODE_FREEFORM (5)
+  PictureInPicture = 2;  // WINDOWING_MODE_PINNED (2)
+  Fullscreen = 3;        // WINDOWING_MODE_FULLSCREEN (1)
+}
+
+message WindowInfo {
+  required int32 taskId = 1;
+  optional string packageName = 2;      // baseActivity.getPackageName()
+  optional Bounds bounds = 3;           // the task's windowConfiguration.getBounds(), guest px
+  optional uint64 wsaDisplayId = 4;     // Long.parseLong(DisplayInfo.uniqueId.substring(6)): "local:100" → 100
+  optional string label = 5;            // taskDescription.label, otherwise topActivityInfo.loadLabel()
+  optional Size minSize = 6;            // ActivityInfo.windowLayout.minWidth/minHeight, if both > 0
+  optional bool visible = 7;            // true on first appearance, then RunningTaskInfo.isVisible
+  optional float fixedAspectRatio = 8;  // PiP only
+  optional bool userResize = 9;         // host→guest: the user is dragging the frame (setDragResizing)
+  optional WindowMode windowMode = 10;
+}
+
+// ---- guest → host ----
+message CreateTopLevelWindow { optional WindowInfo windowInfo = 1; }  // synchronous: the guest waits for the host's reply
+message UpdateClientWindow   { required WindowInfo info = 1; }        // on every onTaskInfoChanged
+message MinimizeClientWindow { required int32 taskId = 1; }           // the task went to the back (onTaskMovedToBack)
+
+// ---- both directions ----
+message SetFocusedWindow {
+  required int32 taskId = 1;
+  optional bool setForeground = 2;  // the guest always sets true
+}
+message RemoveWindow {
+  required int32 taskId = 1;
+  optional bool force = 2;          // host→guest: true — forceStopPackage instead of removeTask
+}
+
+// ---- host → guest ----
+message UpdateAndroidWindow { optional WindowInfo windowInfo = 1; }  // apply bounds/windowMode/userResize/wsaDisplayId to the task
+message ClearFocusedWindow  { required int32 taskId = 1; }
+message OnWindowMinimized {
+  required int32 taskId = 1;
+  required bool minimized = 2;
+}
+message RestorePipWindow { required int32 taskId = 1; }
+message UpdateAndroidDisplayInfo {
+  message DisplayParameters {
+    required uint64 wsaDisplayId = 1;
+    optional int32 density = 2;          // → IWindowManager.setForcedDisplayDensityForUser
+    optional Bounds stableBounds = 3;    // → IWsaSystemServer.updateDisplayBounds (a Microsoft service in system_server, we do not have it)
+    optional Bounds maximizedBounds = 4;
+  }
+  repeated DisplayParameters displayParameters = 1;
+}
+
+message ShellMessage {
+  enum MessageType {
+    None = 0;
+    CreateTopLevelWindow = 1;
+    UpdateAndroidWindow = 2;
+    SetFocusedWindow = 3;
+    ClearFocusedWindow = 4;
+    RemoveWindow = 5;
+    UpdateClientWindow = 6;
+    OnWindowMinimized = 7;
+    UpdateAndroidDisplayInfo = 8;
+    MinimizeClientWindow = 9;
+    RestorePipWindow = 10;
+  }
+  required MessageType messageType = 1;  // dispatch ONLY by this field, not by the presence of a sub-message
+  optional CreateTopLevelWindow createTopLevelWindow = 2;
+  optional UpdateAndroidWindow updateAndroidWindow = 3;
+  optional SetFocusedWindow setFocusedWindow = 4;
+  optional ClearFocusedWindow clearFocusedWindow = 5;
+  optional RemoveWindow removeWindow = 6;
+  optional UpdateClientWindow updateClientWindow = 7;
+  optional OnWindowMinimized onWindowMinimized = 8;
+  optional UpdateAndroidDisplayInfo updateAndroidDisplayInfo = 9;
+  optional MinimizeClientWindow minimizeClientWindow = 10;
+  optional RestorePipWindow restorePipWindow = 11;
+}

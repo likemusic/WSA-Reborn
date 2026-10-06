@@ -1,0 +1,18 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<!--
+    Default permissions for TalkBack ("Screen reader for the subsystem"). At Microsoft
+    it lives in product/app/talkback; bin/transplant-a14.sh puts it into our image (BYOB).
+
+    READ_PHONE_STATE: on every BATTERY_CHANGED TalkBack calls TelephonyManager.getCallState.
+    Microsoft's WSA has no Telecom app, and the call returns without checks. Vanilla AOSP 14
+    has Telecom, and for targetSdk 31+ it requires the permission. Without it TalkBack crashes half a second
+    after being enabled, and after two crashes the system keeps it in the "crashed" list (28.09.2026).
+
+    Granted on first boot and on every build fingerprint change
+    (PackageManagerService: isPermissionUpgradeNeeded → grantDefaultPermissions).
+-->
+<exceptions>
+    <exception package="com.google.android.accessibility.talkback">
+        <permission name="android.permission.READ_PHONE_STATE" fixed="false"/>
+    </exception>
+</exceptions>

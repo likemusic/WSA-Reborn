@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: WSA-Reborn <noreply@wsa-reborn.invalid>
+Date: Mon, 5 Oct 2026 04:54:03 +0000
+Subject: [PATCH 2/2] WSA a15/0022: AudioService - null check in anonymizeAudioDeviceAttributesUnchecked (backport from Android 16), otherwise GMS crashes at startup
+
+Change-Id: I86cdcb4ecf9e2b857a7a1d19372681276cd7d517
+---
+ services/core/java/com/android/server/audio/AudioService.java | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/audio/AudioService.java b/services/core/java/com/android/server/audio/AudioService.java
+index ca0e585d8..9b457021c 100644
+--- a/services/core/java/com/android/server/audio/AudioService.java
++++ b/services/core/java/com/android/server/audio/AudioService.java
+@@ -10904,7 +10904,7 @@ public class AudioService extends IAudioService.Stub
+ 
+     private AudioDeviceAttributes anonymizeAudioDeviceAttributesUnchecked(
+             AudioDeviceAttributes ada) {
+-        if (!AudioSystem.isBluetoothDevice(ada.getInternalType())) {
++        if (ada == null || !AudioSystem.isBluetoothDevice(ada.getInternalType())) {
+             return ada;
+         }
+         AudioDeviceAttributes res = new AudioDeviceAttributes(ada);

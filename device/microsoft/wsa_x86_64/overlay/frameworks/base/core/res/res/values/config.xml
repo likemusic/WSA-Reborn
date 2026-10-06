@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- See lineage_wsa_x86_64.mk: vendor.img (Microsoft) disables
+         config_enableWallpaperService with a priority-0 overlay, which sends
+         com.android.systemui into an endless crash loop. We set it back to true —
+         the product overlay (priority 29) overrides vendor. -->
+    <bool name="config_enableWallpaperService">true</bool>
+    <!-- 21.09.2026: the cause of NO_SURFACE for ALL app windows on LineageOS 21 was a shown
+         keyguard (mKeyguardShowing=true, isSleeping=true in dumpsys activity); the "drawn
+         screen" of 18.09 was the lock screen. WSA has no lock screen (windows live on the
+         host). Verified on the fly: locksettings set-disabled true + wm dismiss-keyguard →
+         windows get a surface (HAS_DRAWN). Here the same is made the default for a fresh /data. -->
+    <bool name="config_disableLockscreenByDefault">true</bool>
+    <!-- 29.09.2026: WSA has no modem and no radio HAL. Android 14 still creates
+         GsmCdmaPhone, and GsmCdmaCallTracker calls getCurrentCalls every 250 ms: RIL answers
+         "IRadio <1.4 is no longer supported" with a stack trace, ~40 lines per second; the logcat channel log
+         on the host grew by ~130 MB per hour and filled C:. On stock (Android 13) RIL stays silent, and the vendor
+         overlay disables only SMS. Without voice, SMS and mobile data
+         TelephonyManager.getActiveModemCount() = 0, and no phone is created. On Android 15 the same
+         comes from the enforce_telephony_feature_mapping_for_public_apis flag (no FEATURE_TELEPHONY), but
+         it does no harm. Verified live on lineage21 with a cmd overlay fabricate overlay. -->
+    <bool name="config_voice_capable">false</bool>
+    <bool name="config_sms_capable">false</bool>
+    <bool name="config_mobile_data_capable">false</bool>
+</resources>

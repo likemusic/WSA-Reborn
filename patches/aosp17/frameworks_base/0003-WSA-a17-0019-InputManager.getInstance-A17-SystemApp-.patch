@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: WSA-Reborn <noreply@wsa-reborn.invalid>
+Date: Fri, 2 Oct 2026 20:05:48 +0000
+Subject: [PATCH 3/3] WSA: a17/0019 - restore InputManager.getInstance() (removed in A17, needed by Microsoft SystemApp), 2026-10-02
+
+Change-Id: I0285e05b1282562cade28d2fc7b87d852abd7869
+---
+ .../java/android/hardware/input/InputManager.java | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/core/java/android/hardware/input/InputManager.java b/core/java/android/hardware/input/InputManager.java
+index 9858af9a8..4599ca225 100644
+--- a/core/java/android/hardware/input/InputManager.java
++++ b/core/java/android/hardware/input/InputManager.java
+@@ -369,6 +369,21 @@ public final class InputManager {
+     private final InputManagerGlobal mGlobal;
+     private final Context mContext;
+ 
++    /**
++     * WSA: restored the method removed in Android 17. Microsoft's SystemApp (targetSdk 33) calls it
++     * from KeyboardSetup.setKeyboardLayout during initialization; without it - NoSuchMethodError,
++     * SystemApp crash loop and the network is never configured. Body is as in Android 16.
++     * docs/patches/a17/0019, 02.10.2026.
++     *
++     * @hide
++     */
++    @Deprecated
++    @UnsupportedAppUsage
++    public static InputManager getInstance() {
++        return java.util.Objects.requireNonNull(android.app.ActivityThread.currentApplication())
++                .getSystemService(InputManager.class);
++    }
++
+     /** @hide */
+     public InputManager(Context context) {
+         mGlobal = InputManagerGlobal.getInstance();

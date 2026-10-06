@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.wsalineage.mediatest">
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <application android:label="MediaTest" android:allowBackup="false">
+        <!-- A window is required: the host binds the Windows media panel to an app window and rejects
+             a session of an app without a window (E_POINTER in SystemMediaControlsRedirector.cpp). -->
+        <activity android:name=".MainActivity" android:exported="true" android:label="MediaTest">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- The media session lives in a foreground service: the app has no window, and without the foreground
+             state Android stops a background service within a minute. -->
+        <service
+            android:name=".PlayerService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback" />
+    </application>
+</manifest>

@@ -1,0 +1,42 @@
+// ARM translation (libhoudini): links in system to the translator, which lives in system_ext.
+// The translator files themselves (Intel/Microsoft binaries) are not in git — they are put into the build by
+// device/microsoft/wsa-houdini/houdini.mk, created by bin/extract-houdini-blobs.sh; it also
+// pulls in these modules. Why system_ext and not links to /vendor, as at Microsoft: the Android 14
+// linker checks the real path, the default namespace allows /system_ext/${LIB},
+// but not /vendor. Analysis — docs/findings.md, 28.09.2026.
+
+install_symlink {
+    name: "wsa_houdini_link_lib64_libhoudini_so",
+    installed_location: "lib64/libhoudini.so",
+    symlink_target: "/system_ext/lib64/libhoudini.so",
+}
+
+install_symlink {
+    name: "wsa_houdini_link_lib_libhoudini_so",
+    installed_location: "lib/libhoudini.so",
+    symlink_target: "/system_ext/lib/libhoudini.so",
+}
+
+install_symlink {
+    name: "wsa_houdini_link_lib64_arm64",
+    installed_location: "lib64/arm64",
+    symlink_target: "/system_ext/lib64/arm64",
+}
+
+install_symlink {
+    name: "wsa_houdini_link_lib_arm",
+    installed_location: "lib/arm",
+    symlink_target: "/system_ext/lib/arm",
+}
+
+install_symlink {
+    name: "wsa_houdini_link_bin_houdini",
+    installed_location: "bin/houdini",
+    symlink_target: "/system_ext/bin/houdini",
+}
+
+install_symlink {
+    name: "wsa_houdini_link_bin_houdini64",
+    installed_location: "bin/houdini64",
+    symlink_target: "/system_ext/bin/houdini64",
+}

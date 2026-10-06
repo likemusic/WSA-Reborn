@@ -1,0 +1,113 @@
+// Protocol of the "UIABridge" channel: the Android UI element tree for Windows UI Automation
+// (Narrator, Magnifier, tools like Inspect).
+//
+// The host asks, the guest answers: info on the active window (GetAccessibilityWindowInfo), the whole
+// visible tree of its elements (GetAccessibilityNodesInfo), an action on an element (PerformAction).
+// The guest itself sends only DirtyBit — "the tree changed, ask again". The host enables the channel with the flag
+// HKCU\Software\Microsoft\WSA\UiaBridgeEnabled through the UiaBridge setting of the "Settings" channel. At
+// Microsoft the guest half is UIABridgeRedirectionHandler and UIABridgeAccessibilityService from
+// UserApp.apk; the schema is checked against the descriptor from WsaClient.exe (bin/proto-from-wsaclient.py). Analysis —
+// docs/wsa-shell-protocol.md, section "The UIABridge channel".
+syntax = "proto2";
+
+// Own package: other channels have Result and MessageType too. The package name does not go on the wire.
+package wsa.rcm.uia;
+
+option java_package = "org.wsalineage.shellbridge.proto";
+option java_outer_classname = "Uia";
+
+// Guest screen coordinates, as AccessibilityNodeInfo.getBoundsInScreen.
+message Bounds {
+  required int32 left = 1;
+  required int32 top = 2;
+  required int32 right = 3;
+  required int32 bottom = 4;
+}
+
+message AccessibilityWindowNode {
+  // The numbers match AccessibilityWindowInfo.TYPE_*.
+  enum WindowType {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_APPLICATION = 1;
+    TYPE_INPUT_METHOD = 2;
+    TYPE_SYSTEM = 3;
+    TYPE_ACCESSIBILITY_OVERLAY = 4;
+    TYPE_SPLIT_SCREEN_DIVIDER = 5;
+    TYPE_MAGNIFICATION_OVERLAY = 6;
+  }
+  required int32 id = 1;
+  required int32 display_id = 2;
+  optional string title = 3;
+  required bool active = 4;
+  required bool focused = 5;
+  required int32 layer = 6;
+  required WindowType window_type = 7;
+  required int32 node_hash_code = 8;
+  required Bounds bounds = 9;
+  // Always 0 in the reference.
+  required int64 count = 10;
+}
+
+// A tree element. Links are via neighbours' node_id, -1 — none; breadth-first traversal from the root.
+message AccessibilityNode {
+  required int32 node_id = 1;
+  // In the reference — getViewIdResourceName; without flagReportViewIds always empty.
+  required string name = 2;
+  // Android class name, e.g. android.widget.Button.
+  required string control_type = 3;
+  optional string package_name = 4;
+  optional string text = 5;
+  optional string content_desc = 6;
+  optional bool checkable = 7;
+  optional bool checked = 8;
+  optional bool clickable = 9;
+  optional bool is_enabled = 10;
+  optional bool is_keyboard_focusable = 11;
+  optional bool has_keyboard_focus = 12;
+  optional bool is_scroll_pattern_available = 13;
+  optional bool is_password = 14;
+  optional bool is_selected = 15;
+  required Bounds bounds = 16;
+  optional int32 parent_id = 17;
+  optional int32 first_child_id = 18;
+  optional int32 next_sibling_id = 19;
+}
+
+message Result {
+  required bool succeeded = 1;
+  optional string error_message = 2;
+}
+
+// Filled in by the guest in the reply.
+message GetAccessibilityNodesInfo {
+  repeated AccessibilityNode accessibility_node = 1;
+}
+
+// Filled in by the guest in the reply.
+message GetAccessibilityWindowInfo {
+  required AccessibilityWindowNode accessibility_window_node = 1;
+}
+
+message PerformAction {
+  enum Action {
+    CLICK = 0;
+    COLLAPSE = 1;
+    EXPAND = 2;
+  }
+  required int32 node_id = 1;
+  required Action action = 2;
+}
+
+message UIABridgeMessage {
+  enum MessageType {
+    GetAccessibilityNodesInfo = 0;   // host → guest
+    PerformAction = 1;               // host → guest
+    GetAccessibilityWindowInfo = 2;  // host → guest
+    DirtyBit = 3;                    // guest → host
+  }
+  required MessageType message_type = 1;
+  optional Result result = 2;
+  optional GetAccessibilityNodesInfo get_accessibility_nodes_info = 3;
+  optional PerformAction perform_action = 4;
+  optional GetAccessibilityWindowInfo get_accessibility_window_info = 5;
+}

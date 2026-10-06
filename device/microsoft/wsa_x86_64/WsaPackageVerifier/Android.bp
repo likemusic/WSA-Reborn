@@ -1,0 +1,12 @@
+// WsaPackageVerifier — the WSA package verifier: hands every install to the WsaShellBridge bridge,
+// which passes it to the Windows antivirus via the host. A separate package for the platform_app domain (see the manifest).
+// Public APIs only; built locally with bin/build-testapp.sh and PLATFORM_KEYS.
+android_app {
+    name: "WsaPackageVerifier",
+    srcs: ["src/**/*.java"],
+    sdk_version: "current",
+    certificate: "platform",
+    privileged: true,
+    privapp_allowlist: "privapp-permissions-wsapackageverifier.xml",
+    system_ext_specific: true,
+}

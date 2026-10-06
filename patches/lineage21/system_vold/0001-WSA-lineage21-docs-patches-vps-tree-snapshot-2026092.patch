@@ -1,0 +1,87 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: WSA-Reborn <noreply@wsa-reborn.invalid>
+Date: Mon, 5 Oct 2026 09:39:51 +0000
+Subject: [PATCH] WSA: lineage21 changes (docs/patches/vps-tree-snapshot-20260929/lineage21), 2026-10-05
+
+Change-Id: I1db703aff5e95747d121f40cd5e3622f27d9e64e
+---
+ Checkpoint.cpp                  | 30 +++++++++++++++++++++++++++++-
+ VoldNativeServiceValidation.cpp | 12 ++++++++++--
+ 2 files changed, 39 insertions(+), 3 deletions(-)
+
+diff --git a/Checkpoint.cpp b/Checkpoint.cpp
+index eca49ef..4af6f6b 100644
+--- a/Checkpoint.cpp
++++ b/Checkpoint.cpp
+@@ -33,8 +33,10 @@
+ #include <android-base/logging.h>
+ #include <android-base/parseint.h>
+ #include <android-base/properties.h>
++#include <android-base/strings.h>
+ #include <android-base/unique_fd.h>
+ #include <cutils/android_reboot.h>
++#include <dirent.h>
+ #include <fcntl.h>
+ #include <fs_mgr.h>
+ #include <linux/fs.h>
+@@ -629,7 +631,33 @@ std::vector<char> relocatedRead(int device_fd, Relocations const& relocations, b
+ 
+ }  // namespace
+ 
+-Status cp_restoreCheckpoint(const std::string& blockDevice, int restore_limit) {
++// WSA: cp_restoreCheckpoint() opens blockDevice DIRECTLY (open()), bypassing
++// fs_mgr::__mount() - which already has the same SCSI=H:C:T:L resolver; here it
++// is duplicated on purpose (see docs/findings.md "continuation 28").
++static std::string ResolveWsaScsiBlockDevice(const std::string& scsi_address) {
++    std::string block_dir = "/sys/bus/scsi/devices/" + scsi_address + "/block";
++    std::unique_ptr<DIR, decltype(&closedir)> dir(opendir(block_dir.c_str()), closedir);
++    if (!dir) return {};
++    struct dirent* entry;
++    while ((entry = readdir(dir.get())) != nullptr) {
++        std::string name(entry->d_name);
++        if (name == "." || name == "..") continue;
++        return "/dev/block/" + name;
++    }
++    return {};
++}
++
++Status cp_restoreCheckpoint(const std::string& blockDevice_arg, int restore_limit) {
++    std::string blockDevice = blockDevice_arg;
++    if (android::base::StartsWith(blockDevice, "SCSI=")) {
++        auto resolved = ResolveWsaScsiBlockDevice(blockDevice.substr(strlen("SCSI=")));
++        if (!resolved.empty()) {
++            LOG(INFO) << "WSA: resolved " << blockDevice << " -> " << resolved;
++            blockDevice = resolved;
++        } else {
++            LOG(ERROR) << "WSA: failed to resolve " << blockDevice << " to a real block device";
++        }
++    }
+     bool validating = true;
+     std::string action = "Validating";
+     int restore_count = 0;
+diff --git a/VoldNativeServiceValidation.cpp b/VoldNativeServiceValidation.cpp
+index 1d19141..2c78ffc 100644
+--- a/VoldNativeServiceValidation.cpp
++++ b/VoldNativeServiceValidation.cpp
+@@ -77,11 +77,19 @@ binder::Status CheckArgumentPath(const std::string& path) {
+     if (path.empty()) {
+         return Exception(binder::Status::EX_ILLEGAL_ARGUMENT, "Missing path");
+     }
+-    if (path[0] != '/') {
++    // WSA: block devices are addressed by the string SCSI=H:C:T:L (Microsoft's native
++    // scheme, see docs/findings.md "continuation 28") - this is not a file
++    // path in the usual sense, but this is exactly what blk_device looks like in
++    // fstab.*.windows, and vdc checkpoint passes it here as is.
++    // It is resolved to the real /dev/block/sdX later (Checkpoint.cpp,
++    // ResolveWsaScsiBlockDevice) - here we just do not reject it as "relative".
++    const bool is_wsa_scsi_address = android::base::StartsWith(path, "SCSI=");
++    if (path[0] != '/' && !is_wsa_scsi_address) {
+         return Exception(binder::Status::EX_ILLEGAL_ARGUMENT,
+                          StringPrintf("Path %s is relative", path.c_str()));
+     }
+-    if (path.find("/../"sv) != path.npos || android::base::EndsWith(path, "/.."sv)) {
++    if (!is_wsa_scsi_address &&
++        (path.find("/../"sv) != path.npos || android::base::EndsWith(path, "/.."sv))) {
+         return Exception(binder::Status::EX_ILLEGAL_ARGUMENT,
+                          StringPrintf("Path %s is shady", path.c_str()));
+     }

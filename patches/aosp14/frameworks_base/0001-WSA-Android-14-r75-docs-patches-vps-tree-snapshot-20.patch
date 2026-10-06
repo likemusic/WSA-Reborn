@@ -1,0 +1,404 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: WSA-Reborn <noreply@wsa-reborn.invalid>
+Date: Thu, 1 Oct 2026 14:43:29 +0000
+Subject: [PATCH 1/2] WSA: Android 14 r75 changes (docs/patches/vps-tree-snapshot-20260929/aosp14 + a16/0016, a16/0017), 2026-10-01
+
+Change-Id: I59ac48d33c6607c6c7a3d473d277f212c7aed6d9
+---
+ core/java/android/app/AppOpsManager.java      |  36 ++++-
+ core/java/android/view/ViewRootImpl.java      |  13 +-
+ .../shell/windowdecor/WindowDecoration.java   |  19 ++-
+ .../clipboardoverlay/ClipboardListener.java   |   5 +
+ .../com/android/systemui/toast/ToastUI.java   |  12 ++
+ .../systemui/toast/WsaToastForwarder.java     | 137 ++++++++++++++++++
+ .../wm/WsaDisplayAreaPolicyProvider.java      |  38 +++++
+ 7 files changed, 253 insertions(+), 7 deletions(-)
+ create mode 100644 packages/SystemUI/src/com/android/systemui/toast/WsaToastForwarder.java
+ create mode 100644 services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java
+
+diff --git a/core/java/android/app/AppOpsManager.java b/core/java/android/app/AppOpsManager.java
+index 62f9b5918..61afb7cc6 100644
+--- a/core/java/android/app/AppOpsManager.java
++++ b/core/java/android/app/AppOpsManager.java
+@@ -8641,8 +8641,21 @@ public class AppOpsManager {
+                                     listener.onOpNoted(sAppOpInfos[op].name, uid, packageName,
+                                             attributionTag, virtualDeviceId, flags, mode);
+                                 } else {
+-                                    listener.onOpNoted(sAppOpInfos[op].name, uid, packageName,
+-                                            attributionTag, flags, mode);
++                                    try {
++                                        listener.onOpNoted(sAppOpInfos[op].name, uid, packageName,
++                                                attributionTag, flags, mode);
++                                    } catch (AbstractMethodError e) {
++                                        // WSA: listeners compiled against API 33 (Microsoft
++                                        // SystemApp, PermissionUsageRedirectionHandler) implement
++                                        // the pre-U signature onOpNoted(int op, ...) only; the
++                                        // AbstractMethodError would kill the persistent process,
++                                        // and its restart re-runs EthernetManager.updateConfiguration
++                                        // which tears the network down for ~300 ms.
++                                        if (!invokeLegacyOnOpNoted(listener, op, uid, packageName,
++                                                attributionTag, flags, mode)) {
++                                            throw e;
++                                        }
++                                    }
+                                 }
+                             }
+                         });
+@@ -8660,6 +8673,25 @@ public class AppOpsManager {
+         }
+     }
+ 
++    /**
++     * WSA: dispatch to the pre-U {@code onOpNoted(int op, ...)} implemented by listeners built
++     * against API 33 (Microsoft SystemApp). Returns false if the listener has no such method.
++     */
++    private static boolean invokeLegacyOnOpNoted(@NonNull OnOpNotedListener listener, int op,
++            int uid, String packageName, String attributionTag, int flags, int mode) {
++        try {
++            java.lang.reflect.Method m = listener.getClass().getMethod("onOpNoted", int.class,
++                    int.class, String.class, String.class, int.class, int.class);
++            m.invoke(listener, op, uid, packageName, attributionTag, flags, mode);
++            return true;
++        } catch (NoSuchMethodException e) {
++            return false;
++        } catch (ReflectiveOperationException e) {
++            Log.e(DEBUG_LOGGING_TAG, "legacy onOpNoted failed for " + listener.getClass().getName(), e);
++            return true;
++        }
++    }
++
+     /**
+      * Stop watching for noted app ops. An app op may be immediate or long running.
+      * Unregistering a non-registered callback has no effect.
+diff --git a/core/java/android/view/ViewRootImpl.java b/core/java/android/view/ViewRootImpl.java
+index a7cb1696e..886ecca34 100644
+--- a/core/java/android/view/ViewRootImpl.java
++++ b/core/java/android/view/ViewRootImpl.java
+@@ -613,6 +613,8 @@ public final class ViewRootImpl implements ViewParent,
+     // used in relayout to get SurfaceControl size
+     // for BLAST adapter surface setup
+     private final Point mSurfaceSize = new Point();
++    // WSA: the surface has a stretch-resize crop on it (docs/patches/a16/0017).
++    private boolean mWsaDragResizeCropped;
+     private final Point mLastSurfaceSize = new Point();
+ 
+     private final Rect mVisRect = new Rect(); // used to retrieve visible rect of focused view.
+@@ -8950,12 +8952,21 @@ public final class ViewRootImpl implements ViewParent,
+                 // Crop to the content size instead of the surface size to avoid exposing garbage
+                 // content that is still on the surface from previous re-layouts (e.g. when
+                 // resizing to a larger size).
++                // WSA: immediately, not in mTransaction until some random apply(): otherwise the crop of the last
++                // stretch takes effect later, on a surface change without stretching (F11 after
++                // "restore"), and cuts a 2560x1600 frame down to the old 1296x927. docs/patches/a16/0017.
+                 mTransaction.setWindowCrop(mSurfaceControl,
+-                        mWinFrameInScreen.width(), mWinFrameInScreen.height());
++                        mWinFrameInScreen.width(), mWinFrameInScreen.height()).apply();
++                mWsaDragResizeCropped = true;
+             } else if (!HardwareRenderer.isDrawingEnabled()) {
+                 // When drawing is disabled the window layer won't have a valid buffer.
+                 // Set a window crop so input can get delivered to the window.
+                 mTransaction.setWindowCrop(mSurfaceControl, mSurfaceSize.x, mSurfaceSize.y).apply();
++            } else if (mWsaDragResizeCropped) {
++                // WSA: stretching is over - remove the crop entirely (invalid rectangle),
++                // rather than setting it to the surface size: that is still the old one, and the crop would survive F11.
++                mTransaction.setWindowCrop(mSurfaceControl, new Rect(0, 0, -1, -1)).apply();
++                mWsaDragResizeCropped = false;
+             }
+         }
+ 
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration.java b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration.java
+index 32c2d1e9b..82ee25e50 100644
+--- a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration.java
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration.java
+@@ -130,6 +130,13 @@ public abstract class WindowDecoration<T extends View & TaskFocusStateConsumer>
+     private Configuration mWindowDecorConfig;
+     TaskDragResizer mTaskDragResizer;
+     private boolean mIsCaptionVisible;
++    // WSA (Windows Subsystem for Android): the window frame, title and shadow are drawn by the Windows host
++    // (WsaClient.exe); the guest caption decoration adds a second title bar inside the window. The flag is set
++    // in device/microsoft/wsa_x86_64 (ro.wsa.host_window_decor=true); the task geometry
++    // (setPosition/setWindowCrop) is still applied here - without it nobody positions an organized
++    // freeform task.
++    private static final boolean HOST_WINDOW_DECOR =
++            android.os.SystemProperties.getBoolean("ro.wsa.host_window_decor", false);
+ 
+     private final Binder mOwner = new Binder();
+     private final Rect mCaptionInsetsRect = new Rect();
+@@ -290,14 +297,18 @@ public abstract class WindowDecoration<T extends View & TaskFocusStateConsumer>
+         startT.setWindowCrop(mCaptionContainerSurface, outResult.mCaptionWidth,
+                         outResult.mCaptionHeight)
+                 .setPosition(mCaptionContainerSurface, outResult.mCaptionX, 0 /* y */)
+-                .setLayer(mCaptionContainerSurface, CAPTION_LAYER_Z_ORDER)
+-                .show(mCaptionContainerSurface);
++                .setLayer(mCaptionContainerSurface, CAPTION_LAYER_Z_ORDER);
++        if (HOST_WINDOW_DECOR) {
++            startT.hide(mCaptionContainerSurface);
++        } else {
++            startT.show(mCaptionContainerSurface);
++        }
+ 
+         if (ViewRootImpl.CAPTION_ON_SHELL) {
+             outResult.mRootView.setTaskFocusState(mTaskInfo.isFocused);
+ 
+             // Caption insets
+-            if (mIsCaptionVisible) {
++            if (mIsCaptionVisible && !HOST_WINDOW_DECOR) {
+                 // Caption inset is the full width of the task with the |captionHeight| and
+                 // positioned at the top of the task bounds, also in absolute coordinates.
+                 // So just reuse the task bounds and adjust the bottom coordinate.
+@@ -356,7 +367,7 @@ public abstract class WindowDecoration<T extends View & TaskFocusStateConsumer>
+             // Shadow is not needed for fullscreen tasks
+             shadowRadius = 0;
+         } else {
+-            shadowRadius = loadDimension(resources, params.mShadowRadiusId);
++            shadowRadius = HOST_WINDOW_DECOR ? 0 : loadDimension(resources, params.mShadowRadiusId);
+         }
+ 
+         if (params.mSetTaskPositionAndCrop) {
+diff --git a/packages/SystemUI/src/com/android/systemui/clipboardoverlay/ClipboardListener.java b/packages/SystemUI/src/com/android/systemui/clipboardoverlay/ClipboardListener.java
+index c7a47b18f..d070b6d44 100644
+--- a/packages/SystemUI/src/com/android/systemui/clipboardoverlay/ClipboardListener.java
++++ b/packages/SystemUI/src/com/android/systemui/clipboardoverlay/ClipboardListener.java
+@@ -97,6 +97,11 @@ public class ClipboardListener implements
+             return;
+         }
+ 
++        // WSA: the SystemUI clipboard preview is drawn on the Windows desktop as a separate window
++        // on top of everything, and the copy goes to the Windows clipboard anyway (bridge Clipboard channel). Stock
++        // Microsoft has no preview. docs/patches/a16/0016, 2026-09-30.
++        if (true) return;
++
+         // user should not access intents before setup or while device is locked
+         if ((clipboardNoninteractiveOnLockscreen() && mKeyguardManager.isDeviceLocked())
+                 || !isUserSetupComplete()
+diff --git a/packages/SystemUI/src/com/android/systemui/toast/ToastUI.java b/packages/SystemUI/src/com/android/systemui/toast/ToastUI.java
+index 85a455d23..7144c55a0 100644
+--- a/packages/SystemUI/src/com/android/systemui/toast/ToastUI.java
++++ b/packages/SystemUI/src/com/android/systemui/toast/ToastUI.java
+@@ -69,6 +69,7 @@ public class ToastUI implements
+     private final AccessibilityManager mAccessibilityManager;
+     private final ToastFactory mToastFactory;
+     private final ToastLogger mToastLogger;
++    private final WsaToastForwarder mWsaToastForwarder;
+     @Nullable private ToastPresenter mPresenter;
+     @Nullable private ITransientNotificationCallback mCallback;
+     @VisibleForTesting ToastOutAnimatorListener mToastOutAnimatorListener;
+@@ -103,6 +104,7 @@ public class ToastUI implements
+         mToastFactory = toastFactory;
+         mAccessibilityManager = mContext.getSystemService(AccessibilityManager.class);
+         mToastLogger = toastLogger;
++        mWsaToastForwarder = new WsaToastForwarder(context);
+     }
+ 
+     @Override
+@@ -115,6 +117,12 @@ public class ToastUI implements
+     public void showToast(int uid, String packageName, IBinder token, CharSequence text,
+             IBinder windowToken, int duration, @Nullable ITransientNotificationCallback callback,
+             int displayId) {
++        // WSA: the guest screen is not visible - Windows shows the Toast, see WsaToastForwarder.
++        if (mWsaToastForwarder.isEnabled()) {
++            mToastLogger.logOnShowToast(uid, packageName, text.toString(), token.toString());
++            mWsaToastForwarder.show(packageName, token, text, duration, callback);
++            return;
++        }
+         Runnable showToastRunnable = () -> {
+             UserHandle userHandle = UserHandle.getUserHandleForUid(uid);
+             Context context = mContext.createContextAsUser(userHandle, 0);
+@@ -162,6 +170,10 @@ public class ToastUI implements
+     @Override
+     @MainThread
+     public void hideToast(String packageName, IBinder token) {
++        if (mWsaToastForwarder.isEnabled()) {
++            mWsaToastForwarder.hide(packageName, token);
++            return;
++        }
+         if (mPresenter == null || !Objects.equals(mPresenter.getPackageName(), packageName)
+                 || !Objects.equals(mPresenter.getToken(), token)) {
+             Log.w(TAG, "Attempt to hide non-current toast from package " + packageName);
+diff --git a/packages/SystemUI/src/com/android/systemui/toast/WsaToastForwarder.java b/packages/SystemUI/src/com/android/systemui/toast/WsaToastForwarder.java
+new file mode 100644
+index 000000000..13602ddec
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/toast/WsaToastForwarder.java
+@@ -0,0 +1,137 @@
++/*
++ * Copyright (C) 2026 The wsa-lineage project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.toast;
++
++import android.annotation.MainThread;
++import android.annotation.Nullable;
++import android.app.ITransientNotificationCallback;
++import android.content.Context;
++import android.content.Intent;
++import android.content.pm.ApplicationInfo;
++import android.content.pm.PackageManager;
++import android.os.IBinder;
++import android.os.RemoteException;
++import android.os.UserHandle;
++import android.util.Log;
++
++import java.util.Objects;
++
++/**
++ * Windows Subsystem for Android: pop-up messages (Toast) are shown by Windows, not by Android.
++ *
++ * The guest screen in WSA is not visible - only app windows are - so a Toast drawn here
++ * would never be seen by the user. Instead of showing it, the text is forwarded to the org.wsalineage.shellbridge bridge
++ * with an explicit broadcast, and the bridge sends it to the host as a NotificationMessage{Toast} on the
++ * "Notification" channel. The bridge receiver is protected by STATUS_BAR_SERVICE, so it accepts only
++ * from SystemUI. Microsoft's WsaToastUI in SystemUIApp.apk works the same way; this code is our own.
++ *
++ * If the bridge is not in the system, the forwarder is disabled and ToastUI draws the Toast as usual.
++ */
++final class WsaToastForwarder {
++    private static final String TAG = "WsaToastForwarder";
++
++    static final String BRIDGE_PACKAGE = "org.wsalineage.shellbridge";
++    static final String ACTION_SHOW = BRIDGE_PACKAGE + ".action.TOAST_SHOW";
++    static final String ACTION_HIDE = BRIDGE_PACKAGE + ".action.TOAST_HIDE";
++    static final String EXTRA_PACKAGE = "package";
++    static final String EXTRA_TOKEN = "token";
++    static final String EXTRA_TEXT = "text";
++    static final String EXTRA_DURATION = "duration";
++
++    private final Context mContext;
++    private Boolean mEnabled;
++
++    // The currently forwarded Toast - so hideToast can tell it from someone else's, like ToastUI does via mPresenter.
++    @Nullable private String mPackageName;
++    @Nullable private IBinder mToken;
++    @Nullable private ITransientNotificationCallback mCallback;
++
++    WsaToastForwarder(Context context) {
++        mContext = context;
++    }
++
++    /** Whether the bridge is present. Checked once: the bridge lives in the system image. */
++    boolean isEnabled() {
++        if (mEnabled == null) {
++            boolean enabled;
++            try {
++                ApplicationInfo ai = mContext.getPackageManager().getApplicationInfo(
++                        BRIDGE_PACKAGE, PackageManager.MATCH_SYSTEM_ONLY);
++                enabled = ai.enabled;
++            } catch (PackageManager.NameNotFoundException e) {
++                enabled = false;
++            }
++            mEnabled = enabled;
++            Log.i(TAG, "toasts go to Windows: " + enabled);
++        }
++        return mEnabled;
++    }
++
++    @MainThread
++    void show(String packageName, IBinder token, CharSequence text, int duration,
++            @Nullable ITransientNotificationCallback callback) {
++        if (mToken != null) {
++            hideCurrent();
++        }
++        mPackageName = packageName;
++        mToken = token;
++        mCallback = callback;
++        send(new Intent(ACTION_SHOW)
++                .putExtra(EXTRA_PACKAGE, packageName)
++                .putExtra(EXTRA_TOKEN, token.toString())
++                .putExtra(EXTRA_TEXT, text != null ? text.toString() : "")
++                .putExtra(EXTRA_DURATION, duration));
++        if (callback != null) {
++            try {
++                callback.onToastShown();
++            } catch (RemoteException e) {
++                Log.w(TAG, "onToastShown() failed for " + packageName, e);
++            }
++        }
++    }
++
++    @MainThread
++    void hide(String packageName, IBinder token) {
++        if (mToken == null || !Objects.equals(mPackageName, packageName)
++                || !Objects.equals(mToken, token)) {
++            Log.w(TAG, "Attempt to hide non-current toast from package " + packageName);
++            return;
++        }
++        hideCurrent();
++    }
++
++    private void hideCurrent() {
++        send(new Intent(ACTION_HIDE)
++                .putExtra(EXTRA_PACKAGE, mPackageName)
++                .putExtra(EXTRA_TOKEN, mToken.toString()));
++        if (mCallback != null) {
++            try {
++                mCallback.onToastHidden();
++            } catch (RemoteException e) {
++                Log.w(TAG, "onToastHidden() failed for " + mPackageName, e);
++            }
++        }
++        mPackageName = null;
++        mToken = null;
++        mCallback = null;
++    }
++
++    private void send(Intent intent) {
++        intent.setPackage(BRIDGE_PACKAGE).addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
++        mContext.sendBroadcastAsUser(intent, UserHandle.SYSTEM);
++    }
++}
+diff --git a/services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java b/services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java
+new file mode 100644
+index 000000000..237bb429f
+--- /dev/null
++++ b/services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java
+@@ -0,0 +1,38 @@
++/*
++ * Copyright (C) 2020 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.server.wm;
++
++/**
++ * vendor.img carries Microsoft's auto-generated RRO (framework-res__auto_generated_rro_vendor.apk),
++ * which sets config_deviceSpecificDisplayAreaPolicyProvider = this very class name. The real
++ * implementation exists only in Microsoft's closed services.jar, which we do not have - vendor.img is shared
++ * with other builds (used by neighbours) and must not be touched. Without this class
++ * DisplayAreaPolicy.Provider.fromResources() throws IllegalStateException right in the constructor of
++ * WindowManagerService - this is not caught (unlike config_deviceSpecificSystemServices),
++ * and system_server falls into an endless reboot loop. We delegate to the default behaviour.
++ */
++public final class WsaDisplayAreaPolicyProvider implements DisplayAreaPolicy.Provider {
++    public WsaDisplayAreaPolicyProvider() {
++    }
++
++    @Override
++    public DisplayAreaPolicy instantiate(WindowManagerService wmService, DisplayContent content,
++            RootDisplayArea root, DisplayArea.Tokens imeContainer) {
++        return new DisplayAreaPolicy.DefaultProvider().instantiate(
++                wmService, content, root, imeContainer);
++    }
++}

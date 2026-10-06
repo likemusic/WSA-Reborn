@@ -1,0 +1,22 @@
+diff --git a/shared.gradle b/shared.gradle
+index c783e53..41ba70b 100644
+--- a/shared.gradle
++++ b/shared.gradle
+@@ -3,7 +3,7 @@
+ android.buildFeatures.buildConfig true
+ 
+ ext {
+-    talkbackApplicationId = "com.android.talkback"
++    talkbackApplicationId = "com.google.android.accessibility.talkback"
+ }
+ 
+ android {
+@@ -17,7 +17,7 @@ android {
+         multiDexEnabled true
+         minSdkVersion 26
+         ndk {
+-            abiFilters "armeabi-v7a", "arm64-v8a"
++            abiFilters "x86_64"
+         }
+         // We generate a build config field holding the application ID so that
+         // Java code can reference it.

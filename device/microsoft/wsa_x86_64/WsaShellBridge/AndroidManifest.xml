@@ -1,0 +1,267 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WsaShellBridge — the "Android tasks <-> Windows windows" bridge over the RCM channel "Shell".
+  Runs as uid system (SELinux domain system_app): the untouched WSA vendor sepolicy already grants it
+  everything needed for hal_rcm_service and the rcmsvc vsock sockets (see docs/wsa-shell-protocol.md),
+  and platform signature permissions (MANAGE_ACTIVITY_TASKS etc.) are granted automatically.
+  persistent — ActivityManager starts the process at boot, no broadcast receivers needed.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.wsalineage.shellbridge"
+    android:sharedUserId="android.uid.system">
+
+    <uses-permission android:name="android.permission.MANAGE_ACTIVITY_TASKS" />
+    <uses-permission android:name="android.permission.INTERNAL_SYSTEM_WINDOW" />
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+    <uses-permission android:name="android.permission.DEVICE_POWER" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FORCE_STOP_PACKAGES" />
+    <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    <uses-permission android:name="android.permission.INJECT_EVENTS" />
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
+    <!-- The clipboard is read on an event from the background, not while the bridge is "focused" (it has no windows). -->
+    <uses-permission android:name="android.permission.READ_CLIPBOARD_IN_BACKGROUND" />
+
+    <!-- Channel "Apps": the list of apps in the Windows Start menu.
+         QUERY_ALL_PACKAGES — enumerate installed packages (with targetSdk 30 not everything is visible otherwise);
+         PACKAGE_USAGE_STATS — app size (StorageStatsManager);
+         DELETE_PACKAGES — uninstall on a command from Windows;
+         ACCESS_SHORTCUTS — app shortcuts (taskbar jump list), signature level;
+         OVERRIDE_COMPAT_CHANGE_CONFIG_ON_RELEASE_BUILD — window compatibility setting
+         sent by the host; specifically the ON_RELEASE_BUILD variant, because the build is not eng.
+         Three of them are privileged and listed in the privapp allowlist; ACCESS_SHORTCUTS and
+         QUERY_ALL_PACKAGES are not (signature and normal respectively). -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+    <uses-permission android:name="android.permission.DELETE_PACKAGES" />
+    <uses-permission android:name="android.permission.ACCESS_SHORTCUTS" />
+    <uses-permission android:name="android.permission.OVERRIDE_COMPAT_CHANGE_CONFIG_ON_RELEASE_BUILD" />
+
+    <!-- Channel "FileSystem": the host drops Windows files into /mnt/shared_tmp, and that directory is
+         cache:cache 0770. It is this permission that gives the process the cache group (platform.xml);
+         level signature|privileged, hence it is in the privapp allowlist. -->
+    <uses-permission android:name="android.permission.ACCESS_CACHE_FILESYSTEM" />
+
+    <!-- Channel "SystemMediaControls": media sessions of all apps (getActiveSessions without a notification
+         listener) and controlling them. Level signature|privileged — in the privapp allowlist. -->
+    <uses-permission android:name="android.permission.MEDIA_CONTENT_CONTROL" />
+    <!-- The geocoder (OsmGeocodeService) talks to a Nominatim server. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:name=".BridgeApplication"
+        android:label="WSA Shell Bridge"
+        android:persistent="true"
+        android:directBootAware="true"
+        android:allowBackup="false"
+        android:hasCode="true">
+
+        <!--
+          Images copied in Windows: ClipData carries only a content:// URI.
+
+          Exported, and necessarily so. The usual scheme (exported="false" + grantUriPermissions,
+          as in androidx FileProvider) relies on ClipboardService granting the pasting app a URI
+          permission on behalf of the owner in getPrimaryClip. The owner here is uid 1000, and
+          UriGrantsManagerService refuses grants from such uids BY DESIGN: "For
+          security reasons, the system cannot issue a Uri permission grant ...; use
+          startActivityAsCaller() instead". Microsoft's UserApp.apk does not hit this because it
+          does NOT declare sharedUserId=android.uid.system and runs under its own uid; our bridge
+          must be uid system for the "Shell" channel. Caught on 24.09.2026 on a live slot.
+
+          What this exposes: the provider is read-only, serves only the last few images,
+          and each is named by a random UUID that exists only in the ClipData itself. Only whoever
+          received that URI can read it — i.e. someone who can already see the clipboard contents.
+        -->
+        <provider
+            android:name=".ClipboardImageProvider"
+            android:authorities="org.wsalineage.shellbridge.clipboard"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+
+        <!-- Empty home screen modelled on Microsoft's HomeApp (Home + SECONDARY_HOME). DefaultHome makes it
+             the default home once (HOME role); why — see the class itself.
+             directBootAware="false": Launcher3 is unavailable before the user unlocks, and without this
+             system_server picked us as home instead of FallbackHome from Settings (priority 0 versus
+             -1000) — after unlocking, the task stayed stuck on top of the launcher. -->
+        <activity
+            android:name=".HomeActivity"
+            android:directBootAware="false"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:stateNotNeeded="true"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Material.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.SECONDARY_HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Channel "FileSystem": "Share" and "Open" -> the file goes to Windows and is opened
+             there. No window; whose files may be sent — see the comment in the class itself. The filters
+             mirror ShareIntentHandler and FileSystemIntentHandler of the reference. -->
+        <activity
+            android:name=".SendToWindowsActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter android:label="Windows">
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter android:label="Open in Windows">
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.EDIT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="application/*" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="text/*" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+            <intent-filter android:label="Open in Windows">
+                <action android:name="com.android.camera.action.REVIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- Channel "Intents", guest -> host: links open in Windows (browser, mail,
+             dialer, Maps, search). The filters mirror BrowserIntentHandler, EmailIntentHandler,
+             PhoneIntentHandler, MapsIntentHandler and SearchIntentHandler of the reference; which schemes
+             are passed to the host at all and how we differ from the reference — in the class itself. -->
+        <activity
+            android:name=".OpenInWindowsActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter android:label="Windows browser">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+            </intent-filter>
+            <intent-filter android:label="Windows browser">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter android:label="Windows mail">
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.SENDTO" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="mailto" />
+            </intent-filter>
+            <intent-filter android:label="Windows phone">
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.DIAL" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="tel" />
+                <data android:scheme="sip" />
+                <data android:scheme="voicemail" />
+            </intent-filter>
+            <intent-filter android:label="Windows Maps">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="geo" />
+            </intent-filter>
+            <intent-filter android:label="Windows search">
+                <action android:name="android.intent.action.WEB_SEARCH" />
+                <action android:name="android.search.action.GLOBAL_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Channel "TSF": the Windows text service enters text into Android fields (layouts, IME,
+             emoji, dictation). The bridge makes this input method the default at startup. -->
+        <service
+            android:name=".WindowsInputMethod"
+            android:label="Windows"
+            android:permission="android.permission.BIND_INPUT_METHOD"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data android:name="android.view.im" android:resource="@xml/method" />
+        </service>
+
+        <!-- Channel "TextToSpeech": an Android speech synthesis engine with Windows voices. The bridge makes
+             it the default engine unless another one is selected. -->
+        <service
+            android:name=".WindowsTtsService"
+            android:label="Windows"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.TTS_SERVICE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data android:name="android.speech.tts" android:resource="@xml/tts_engine" />
+        </service>
+        <activity
+            android:name=".WindowsTtsCheckData"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.speech.tts.engine.CHECK_TTS_DATA" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Android geocoder on top of OpenStreetMap (Nominatim) instead of the dead GeocodeService
+             of Microsoft's SystemApp: the system picks the system service with the highest serviceVersion,
+             and Microsoft's service has none. Only system_server binds to it (permission as in the
+             reference). Server — settings global wsa_geocoder_url, details in the class. -->
+        <service
+            android:name=".OsmGeocodeService"
+            android:permission="android.permission.WRITE_SECURE_SETTINGS"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.android.location.service.GeocodeProvider" />
+            </intent-filter>
+            <meta-data android:name="serviceVersion" android:value="1" />
+        </service>
+
+        <!-- Channel "UIABridge": the Android element tree for Windows Narrator. The bridge enables
+             the service when the host says so (UiaBridgeEnabled flag); otherwise it is disabled. -->
+        <service
+            android:name=".WindowsAccessibilityService"
+            android:label="Windows UI Automation"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service" />
+        </service>
+
+        <!-- Windows files (clipboard, "Share" from Windows) by GUID. Exported for
+             the same reason as the image provider above; analysis — in the class itself. -->
+        <provider
+            android:name=".WindowsFileProvider"
+            android:authorities="org.wsalineage.shellbridge.windowsfiles"
+            android:exported="true" />
+
+        <!-- Package verification on install (channel "FileSystem"): the WsaPackageVerifier verifier
+             hands the apk here through a pipe, the bridge passes it to the host, to the Windows antivirus (AMSI). Exported,
+             but only a package signed with the platform key may call it; the check is in the class. -->
+        <provider
+            android:name=".PackageVerificationProvider"
+            android:authorities="org.wsalineage.shellbridge.verify"
+            android:exported="true" />
+    </application>
+</manifest>

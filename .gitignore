@@ -1,0 +1,8 @@
+upstream/
+*.vhdx
+*.img
+tools/
+CLAUDE.local.md
+.claude/settings.json
+testapps/*/out/
+out/

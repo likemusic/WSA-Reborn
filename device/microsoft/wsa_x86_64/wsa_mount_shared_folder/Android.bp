@@ -1,0 +1,10 @@
+// Mounting the Windows user folder at /sdcard/Windows (a replacement for Microsoft's
+// mount_shared_folder, our own code). The vold_exec label is in sepolicy/file_contexts, vold permissions in
+// sepolicy/wsa_shared_folder.te. Without a tree it is built by bin/add-shared-folder.sh with the NDK.
+cc_binary {
+    name: "wsa_mount_shared_folder",
+    srcs: ["main.c"],
+    system_ext_specific: true,
+    init_rc: ["wsa_mount_shared_folder.rc"],
+    cflags: ["-Wall", "-Werror"],
+}

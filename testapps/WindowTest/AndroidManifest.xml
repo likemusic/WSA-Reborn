@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.wsalineage.windowtest">
+    <application android:label="WindowTest" android:allowBackup="false">
+        <!-- configChanges: the window is not recreated when bounds change, the log shows the same activity. -->
+        <activity android:name=".MainActivity" android:exported="true" android:label="WindowTest"
+            android:resizeableActivity="true" android:supportsPictureInPicture="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- Larger than the host work area: the bridge must maximize it (≥90%). -->
+        <activity android:name=".BigActivity" android:exported="true" android:label="WindowTest Big"
+            android:resizeableActivity="true" android:supportsPictureInPicture="true" android:taskAffinity="org.wsalineage.windowtest.big"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density">
+            <layout android:defaultWidth="2000dp" android:defaultHeight="1250dp" />
+        </activity>
+        <!-- Tall and narrow: taller than the work area, the bridge must shrink and move it. -->
+        <activity android:name=".TallActivity" android:exported="true" android:label="WindowTest Tall"
+            android:resizeableActivity="true" android:supportsPictureInPicture="true" android:taskAffinity="org.wsalineage.windowtest.tall"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density">
+            <layout android:defaultWidth="600dp" android:defaultHeight="1270dp" />
+        </activity>
+    </application>
+</manifest>

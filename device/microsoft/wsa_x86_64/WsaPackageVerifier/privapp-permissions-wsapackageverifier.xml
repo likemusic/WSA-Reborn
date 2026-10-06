@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Privileged permission allowlist for the WSA package verifier. In the image it lives under the
+     module name: /system_ext/etc/permissions/WsaPackageVerifier.xml. -->
+<permissions>
+    <privapp-permissions package="org.wsalineage.packageverifier">
+        <permission name="android.permission.PACKAGE_VERIFICATION_AGENT"/>
+    </privapp-permissions>
+</permissions>

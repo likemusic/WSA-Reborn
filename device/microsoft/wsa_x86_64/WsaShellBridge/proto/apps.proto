@@ -1,0 +1,175 @@
+// Protocol of the "Apps" channel: the list of Android apps in the Windows Start menu.
+//
+// Through it Windows learns what the guest has installed, how to render it (icon, name, publisher),
+// what can be launched and what can be uninstalled; back come uninstall on a command from Windows,
+// force stop and window compatibility settings. App shortcuts (jump list —
+// what Windows shows in the context menu of the taskbar icon) travel here too.
+//
+// The schema is taken from the host WsaClient.exe (bin/proto-from-wsaclient.py, file Apps.proto) — these
+// are Microsoft's genuine field numbers and enum values. Names are adapted to our style
+// (camelCase); names do not go on the wire. Guest reference — AppsRedirectionHandler + AppCompat from
+// SystemApp.apk; analysis and differences of our implementation — docs/wsa-shell-protocol.md, section
+// "The "Apps" channel".
+syntax = "proto2";
+
+// Own package: a Result with the same fields exists in "Intents", "Clipboard" and "Notification".
+package wsa.rcm.apps;
+
+option java_package = "org.wsalineage.shellbridge.proto";
+option java_outer_classname = "Apps";
+
+import "common.proto";
+
+message Result {
+  required bool success = 1;
+  optional string statusMessage = 2;
+}
+
+// Links the app is willing to open instead of the browser (verified app links).
+message AppLink {
+  repeated string hostname = 1;
+  repeated string path = 2;  // with a LITERAL:/PREFIX:/GLOB:/ADVANCED:/SUFFIX: prefix
+}
+
+// An app shortcut: the same as ShortcutInfo in Android.
+message JumpListShortcut {
+  required string shortcutId = 1;
+  required string displayName = 2;
+  optional PNG icon = 3;
+}
+
+// One app, as Windows shows it.
+message App {
+  required string packageName = 1;
+  optional string displayName = 2;
+  optional string versionName = 3;
+  optional string developerName = 4;   // package name reversed: com.example.app -> example.com
+  optional PNG icon = 5;
+  optional bool isLaunchable = 6;
+  optional bool isUninstallable = 7;
+  optional string versionCode = 8;     // lower 32 bits of longVersionCode, as a string
+  optional int64 longVersionCode = 9;
+  optional string lastUpdateTime = 10; // YYYYMMDD
+  optional int64 sizeInBytes = 11;
+  repeated string intentFilterDataScheme = 12;
+  optional string installSource = 13;  // System | Sideload | installer package name
+  optional int32 targetSdkVersion = 14;
+  repeated JumpListShortcut jumpList = 15;
+  optional bool usesFeaturePc = 16;    // android.hardware.type.pc in the manifest
+  repeated AppLink applinks = 17;
+}
+
+message GetList {
+  repeated App apps = 1;
+}
+
+// Window compatibility setting. The only known one is a ban on resizing the window
+// (platform change id 181136395, FORCE_NON_RESIZE_APP).
+message CompatShim {
+  enum ShimId {
+    None = 0;
+    ForceNonResizeableApp = 1;
+  }
+  required ShimId shimId = 1;
+  optional bool enabled = 2;
+}
+
+message AppCompatShim {
+  required string packageName = 1;
+  repeated CompatShim shims = 2;
+}
+
+message ApplyCompatShims {
+  repeated AppCompatShim appShims = 1;
+}
+
+// What the guest itself thinks about resizing this app's window; the host takes it into account
+// when deciding which shim to send back.
+message NonResizeHeuristic {
+  enum HeuristicCategory {
+    NO_HEURISTICS = 0;
+    SYSTEM_APP = 1;
+    APPLICATION_RESIZEABLE = 2;
+    APPLICATION_UNRESIZEABLE = 3;
+    RESIZE_DEPRECATED = 4;
+    RESIZE_LOWER_SDK = 5;
+    LAUNCH_ACTIVITY_FIXED_ORIENTATION = 6;
+  }
+  required bool apply = 1;
+  required HeuristicCategory category = 2 [default = NO_HEURISTICS];
+  optional bool heuristicsEnabledProperty = 3;
+}
+
+// An app appeared, disappeared or was updated. The host's reply to ADDED/REPLACED carries shims.
+message Status {
+  enum Action {
+    ADDED = 0;
+    REMOVED = 1;
+    REPLACED = 2;
+  }
+  required App app = 1;
+  required Action action = 2 [default = ADDED];
+  repeated CompatShim shims = 3;
+  optional NonResizeHeuristic nonResizeHeuristic = 4;
+}
+
+message UninstallRequest {
+  required App app = 1;
+}
+
+message UninstallResult {
+  required App app = 1;
+  required Result result = 2;
+}
+
+message JumpListChanged {
+  required App app = 1;
+}
+
+// Windows asks whether the app accepts files with such extensions (drag and drop,
+// "Open with"). The guest answers by resolving the SEND/SEND_MULTIPLE intent.
+message FileShare {
+  enum ShareSupport {
+    NotShareable = 0;
+    PartiallyShareable = 1;
+    Shareable = 2;
+  }
+  message CheckResponse {
+    required ShareSupport shareSupport = 1;
+    optional int32 totalFileCount = 2;
+    optional int32 supportedFileCount = 3;
+  }
+  required string packageName = 1;
+  repeated string extension = 2;          // with a dot: .png, .txt
+  optional CheckResponse response = 3;
+  repeated string allowedExtensions = 4;
+}
+
+message ForceStopPackage {
+  required string packageName = 1;
+}
+
+message AppsMessage {
+  enum MessageType {
+    None = 0;
+    GetList = 1;           // host → guest: list everything installed
+    Status = 2;            // guest → host: an app appeared/disappeared/was updated
+    UninstallRequest = 3;  // host → guest: uninstall the app
+    UninstallResult = 4;   // guest → host: how the uninstall ended
+    SyncCompatShims = 5;   // host → guest: here are compatibility settings for packages
+    JumpListChanged = 6;   // guest → host: an app's shortcuts changed
+    FileShare = 7;         // host → guest: will the app accept such files
+    ForceStopPackage = 8;  // host → guest: stop the app
+  }
+  required MessageType messageType = 1;
+  required ActivityId activityId = 2;
+  optional GetList getList = 3;
+  optional Status status = 4;
+  optional Result result = 5;
+  optional UninstallRequest uninstallRequest = 6;
+  optional UninstallResult uninstallResult = 7;
+  optional ApplyCompatShims applyCompatShims = 8;
+  optional JumpListChanged jumpListChanged = 9;
+  optional FileShare fileShare = 10;
+  optional ForceStopPackage forceStopPackage = 11;
+}

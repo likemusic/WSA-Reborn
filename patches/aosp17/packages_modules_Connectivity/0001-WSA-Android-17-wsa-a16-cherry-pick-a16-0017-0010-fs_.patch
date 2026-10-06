@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: WSA-Reborn <noreply@wsa-reborn.invalid>
+Date: Wed, 30 Sep 2026 23:30:41 +0000
+Subject: [PATCH] WSA: Android 17 changes (port of the wsa-a16 cherry-pick; a16/0017 not needed - the platform removes the crop itself; 0010 fs_mgr is in system/fs/fs_mgr), 2026-10-02
+
+Change-Id: I6fe587f553d1c952eb13e342db457eaf85a6ca7e
+---
+ .../src/android/net/NetworkCapabilities.java  | 17 ++++++---------
+ .../server/ethernet/EthernetServiceImpl.java  | 21 ++++++++++++-------
+ 2 files changed, 19 insertions(+), 19 deletions(-)
+
+diff --git a/framework/src/android/net/NetworkCapabilities.java b/framework/src/android/net/NetworkCapabilities.java
+index 70f7372..f199d16 100644
+--- a/framework/src/android/net/NetworkCapabilities.java
++++ b/framework/src/android/net/NetworkCapabilities.java
+@@ -1858,17 +1858,12 @@ public final class NetworkCapabilities implements Parcelable {
+      */
+     public @NonNull NetworkCapabilities setNetworkSpecifier(
+             @NonNull NetworkSpecifier networkSpecifier) {
+-        if (networkSpecifier != null
+-                // Transport can be test, or test + a single other transport or cellular + satellite
+-                // transport. Note: cellular + satellite combination is allowed since both transport
+-                // use the same specifier, TelephonyNetworkSpecifier.
+-                && mTransportTypes != (1L << TRANSPORT_TEST)
+-                && Long.bitCount(mTransportTypes & ~(1L << TRANSPORT_TEST)) != 1
+-                && !specifierAcceptableForMultipleTransports(mTransportTypes)) {
+-            throw new IllegalStateException("Must have a single non-test transport specified to "
+-                    + "use setNetworkSpecifier");
+-        }
+-
++        // WSA: com.microsoft.windows.network.NetworkManager (SystemApp, closed
++        // source) calls setNetworkSpecifier() with a set of transports that
++        // this check rejects on this Android/Connectivity module version -
++        // apparently SystemApp was built against a different API revision. Relax
++        // the check for our build; see docs/microsoft-components-checklist.md,
++        // docs/findings.md, 18.09.2026 ("Must have a single non-test transport").
+         mNetworkSpecifier = networkSpecifier;
+ 
+         return this;
+diff --git a/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java b/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java
+index bb5db6b..365e2b6 100644
+--- a/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java
++++ b/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java
+@@ -72,8 +72,13 @@ public class EthernetServiceImpl extends BaseEthernetServiceImpl {
+     }
+ 
+     private void enforceAutomotiveDevice() {
+-        PermissionUtils.enforceSystemFeature(mContext, PackageManager.FEATURE_AUTOMOTIVE,
+-                "Only available on automotive devices.");
++        // WSA: Microsoft's WsaClient/SystemApp calls updateConfiguration() with
++        // capabilities, expecting this check to mean nothing on a non-
++        // automotive device (WSA itself does not declare itself automotive).
++        // On Android 13/AOSP GSI the same check was removed with a byte patch of
++        // service-connectivity.jar (docs/findings.md, "enforceAutomotiveDevice patch");
++        // here, since we have the sources, we remove it at the source level -
++        // cleaner and survives a rebuild. See docs/microsoft-components-checklist.md.
+     }
+ 
+     @CheckResult
+@@ -302,12 +307,12 @@ public class EthernetServiceImpl extends BaseEthernetServiceImpl {
+     }
+ 
+     private void maybeValidateEthernetTransport(String iface, NetworkCapabilities nc) {
+-        if (mTracker.isValidTestInterface(iface)) {
+-            return;
+-        }
+-        if (!nc.hasSingleTransport(TRANSPORT_ETHERNET)) {
+-            throw new IllegalArgumentException("Invalid transport type for request.");
+-        }
++        // WSA: com.microsoft.windows.network.NetworkManager (SystemApp) sends
++        // NetworkCapabilities without the single TRANSPORT_ETHERNET expected
++        // by this check - the same kind of API version mismatch as
++        // enforceAutomotiveDevice/setNetworkSpecifier slightly earlier in the chain.
++        // Relax it; see docs/microsoft-components-checklist.md.
++        return;
+     }
+ 
+     private void maybeEnforceAutomotiveDevice(String iface) {

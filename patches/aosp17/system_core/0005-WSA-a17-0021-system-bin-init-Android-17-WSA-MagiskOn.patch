@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: WSA-Reborn <noreply@wsa-reborn.invalid>
+Date: Sat, 3 Oct 2026 07:09:55 +0000
+Subject: [PATCH 5/5] WSA a17/0021: /system/bin/init runs the first stage without arguments again (as before Android 17) - for WSA and the MagiskOnWSALocal second-stage hijack
+
+Change-Id: Ia48aec826daf109c6f2afbd42ca40fd58dc0e274
+---
+ init/Android.bp | 9 +++++++++
+ init/main.cpp   | 2 +-
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/init/Android.bp b/init/Android.bp
+index 2783c9b..b209970 100644
+--- a/init/Android.bp
++++ b/init/Android.bp
+@@ -333,6 +333,15 @@ cc_binary {
+     defaults: ["init_second_stage_defaults"],
+     static_libs: ["libinit"],
+     visibility: ["//visibility:any_system_partition"],
++    // WSA (a17/0021): /system/bin/init can do the first stage again, as before Android 17. WSA starts
++    // /init from the root of system without arguments, and MagiskOnWSALocal hijacks the second stage by patching
++    // the "/system/bin/init" string in exactly this binary (as does the recovery build below).
++    cflags: ["-DWSA_FIRST_STAGE_IN_SYSTEM_INIT"],
++    srcs: [
++        "first_stage_init.cpp",
++        "first_stage_mount.cpp",
++        "first_stage_mount_android.cpp",
++    ],
+     required: [
+         "init.rc",
+         "ueventd.rc",
+diff --git a/init/main.cpp b/init/main.cpp
+index bb09f30..a5b8664 100644
+--- a/init/main.cpp
++++ b/init/main.cpp
+@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
+         }
+     }
+ 
+-#if defined(FIRST_STAGE_INIT) || defined(RECOVERY)
++#if defined(FIRST_STAGE_INIT) || defined(RECOVERY) || defined(WSA_FIRST_STAGE_IN_SYSTEM_INIT)
+     return FirstStageMain(argc, argv);
+ #else
+     LOG(FATAL) << "Second-stage init requires an argument to main()";

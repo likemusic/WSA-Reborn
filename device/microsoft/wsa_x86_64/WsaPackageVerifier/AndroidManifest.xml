@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- WSA package verifier: hands every install to the bridge, and the bridge to the Windows antivirus (AMSI)
+     via the host. A separate package rather than part of the bridge, exactly like Microsoft (UserApp): the platform
+     signature WITHOUT sharedUserId gives the SELinux domain platform_app, which the platform allows to
+     read apks from the install session directory (apk_tmp_file). For the bridge (system_app) this is forbidden by a
+     neverallow in system/sepolicy/public/app.te. Analysis — docs/wsa-shell-protocol.md,
+     "Package verification at install (AMSI)". -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.wsalineage.packageverifier">
+
+    <!-- Act as the package verifier (signature|privileged — also in the privapp allowlist). -->
+    <uses-permission android:name="android.permission.PACKAGE_VERIFICATION_AGENT" />
+    <!-- See the bridge and call its provider (since Android 11 packages are hidden from each other). -->
+    <queries>
+        <package android:name="org.wsalineage.shellbridge" />
+    </queries>
+
+    <application android:label="WSA package verifier" android:allowBackup="false"
+        android:persistent="false">
+        <receiver
+            android:name=".VerificationReceiver"
+            android:permission="android.permission.BIND_PACKAGE_VERIFIER"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_NEEDS_VERIFICATION" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

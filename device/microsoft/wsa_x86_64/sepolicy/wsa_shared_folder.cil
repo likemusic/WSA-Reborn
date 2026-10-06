@@ -1,0 +1,10 @@
+; Same as wsa_shared_folder.te, for appending to system_ext_sepolicy.cil of a ready slot
+; (bin/add-shared-folder.sh). set_prop is expanded by hand: the property_service socket and the type itself.
+(allow vold labeledfs (filesystem (relabelfrom)))
+(allow vold media_rw_data_file (filesystem (mount relabelfrom relabelto)))
+(allow media_rw_data_file media_rw_data_file (filesystem (associate)))
+(allow vold media_rw_data_file (dir (mounton)))
+(allow vold property_socket (sock_file (write)))
+(allow vold init (unix_stream_socket (connectto)))
+(allow vold system_prop (property_service (set)))
+(allow vold system_prop (file (read getattr map open)))

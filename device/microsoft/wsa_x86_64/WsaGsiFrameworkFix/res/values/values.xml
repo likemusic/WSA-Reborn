@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Microsoft's overlay in vendor points to the class com.android.server.wm.WsaDisplayAreaPolicyProvider,
+         which the stock GSI does not have. An empty string is the standard AOSP path: DisplayAreaPolicy.Provider
+         .fromResources() takes DefaultProvider when TextUtils.isEmpty(name). -->
+    <string name="config_deviceSpecificDisplayAreaPolicyProvider"></string>
+    <!-- The same Microsoft overlay disables the stock wallpaper service. Without WallpaperManagerService
+         SystemUI dies with an NPE (WallpaperManager$Globals.mService == null) and crash-loops,
+         dragging launcher3 along. On path B the same is fixed with a product overlay. -->
+    <bool name="config_enableWallpaperService">true</bool>
+</resources>
