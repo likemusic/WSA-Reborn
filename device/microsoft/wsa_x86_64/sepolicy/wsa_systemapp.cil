@@ -1,10 +1,10 @@
 ; Allows com.microsoft.windows.systemapp (transplanted from the reference Microsoft
-; image, see docs/microsoft-components-checklist.md) to register and
+; image, see docs/architecture.md) to register and
 ; find its custom IWsaSystemApp service via service_manager.
 ;
 ; The type and the first three rules are copied verbatim from the reference
-; system_ext_sepolicy.cil of image 2407.40000.4.0 (see docs/findings.md,
-; 18.09.2026, "CONFIRMED..."/network). The last line (membership in the
+; system_ext_sepolicy.cil of image 2407.40000.4.0 (found
+; 18.09.2026 while bringing up the network). The last line (membership in the
 ; service_manager_type attribute) was MISSED in the first transplant and found
 ; separately: without it system_app cannot find ITS OWN service
 ; (the broad rule `allow system_app service_manager_type:service_manager
@@ -16,7 +16,7 @@
 ; accepts only .te files compiled at build time, not raw CIL,
 ; which secilc processes at device boot) — it is still wired in
 ; by a manual post-patch of the already built system_ext_sepolicy.cil
-; (bin/patch-system-file.sh), see docs/findings.md.
+; (bin/patch-system-file.sh).
 (type wsa_systemapp_service)
 (roletype object_r wsa_systemapp_service)
 (allow priv_app wsa_systemapp_service (service_manager (find)))

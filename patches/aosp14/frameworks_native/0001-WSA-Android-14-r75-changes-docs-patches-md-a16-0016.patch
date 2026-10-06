@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 14:43:29 +0000
-Subject: [PATCH] WSA: Android 14 r75 changes (docs/patches/vps-tree-snapshot-20260929/aosp14 + a16/0016, a16/0017), 2026-10-01
+Subject: [PATCH] WSA: Android 14 r75 changes (docs/patches.md + a16/0016, a16/0017), 2026-10-01
 
 Change-Id: If345851b3c02a32a81fbda850b9c7995dfa34d06
 ---
@@ -54,7 +54,7 @@ index 0966fe0..2d725d3 100644
 +    // Windows Subsystem for Android (WSA): hwcomposer.windows.so groups HWC layers into a host window
 +    // by com.microsoft.wsa.taskid and distinguishes them by com.microsoft.wsa.windowtype. We export both
 +    // keys REGARDLESS of the list the HAL declared via getLayerGenericMetadataKeys (as Microsoft's
-+    // surfaceflinger did, see docs/findings.md 2026-09-12; on A14 the list could turn out empty).
++    // surfaceflinger did, observed 2026-09-12; on A14 the list could turn out empty).
 +    static const std::pair<const char*, uint32_t> kWsaMetadataKeys[] = {
 +            {"com.microsoft.wsa.taskid", gui::METADATA_TASK_ID},
 +            {"com.microsoft.wsa.windowtype", gui::METADATA_WINDOW_TYPE},

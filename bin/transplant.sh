@@ -76,7 +76,7 @@ case "$KEY" in
         ;;
 esac
 
-# What we transplant. The list comes from analysing image 2407 (docs/guest-components-inventory.md).
+# What we transplant. The list comes from analysing image 2407 (docs/architecture.md).
 # Paths are relative to the partition root.
 APKS_SYSTEM_EXT="priv-app/SystemApp/SystemApp.apk
 priv-app/UserApp/UserApp.apk
@@ -89,13 +89,11 @@ APKS_PRODUCT="app/HomeApp/HomeApp.apk"
 # A FIFTH mandatory component, not in the lists above and NOT transplanted by this
 # script: system/bin/surfaceflinger. It is a native binary (not apk/jar); that it
 # carries Microsoft patches was unknown when this list was written
-# (found only on 12.09.2026, see docs/findings.md — "Breakthrough: found
-# why windows were not created" and follow-ups — and the memory note
-# wsa-surfaceflinger-root-cause-20260912). Without it app windows are not
+# (found only on 12.09.2026). Without it app windows are not
 # shown on the host at all. It is transplanted by a separate tool:
 #   bin/patch-system-file.sh <system.img image> /system/bin/surfaceflinger <Microsoft reference>
 # For Android 14/LineageOS 21 there is no ready Microsoft binary — there it takes not a
-# file transplant but a source patch, see docs/patches/0001-wsa-generic-layer-metadata.patch.
+# file transplant but a source patch, see docs/patches.md, fix 0006.
 
 # Overlays in vendor are NOT touched: vendor stays entirely from WSA (Treble, see
 # docs/treble-vendor-compatibility.md), so they also keep their own signatures.

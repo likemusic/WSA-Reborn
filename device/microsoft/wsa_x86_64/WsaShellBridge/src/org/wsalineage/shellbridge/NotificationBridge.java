@@ -9,11 +9,11 @@
  * half: NotificationRedirectionHandler from SystemUIApp.apk; the code here is our own. Deviations from the reference
  * are deliberate and marked in place: text is read as CharSequence, the BigPictureStyle picture
  * is also taken in its new form (Icon), PendingIntent is launched on behalf of the app with explicit
- * permission for a background start, picture size is capped. Analysis: docs/wsa-shell-protocol.md,
+ * permission for a background start, picture size is capped. Analysis: docs/protocol.md,
  * the section on the "Notification" channel.
  *
  * Toasts do not go through NotificationManager: SystemUI (ToastUI) shows them,
- * and they can only be intercepted from inside it. Platform patch docs/patches/0012 makes
+ * and they can only be intercepted from inside it. Platform patch 0012 (docs/patches.md) makes
  * ToastUI not draw the Toast but forward it here with an explicit broadcast (ACTION_TOAST_SHOW/HIDE);
  * the receiver is protected by STATUS_BAR_SERVICE, so only SystemUI can send it. From there the Toast
  * goes to the host as a message of type Toast, and on hide as CancelNotification, like Microsoft's WsaToastUI.
@@ -524,8 +524,8 @@ public final class NotificationBridge implements ApiChannel.Handler {
      * arguments without escaping and then parses them itself via WwwFormUrlDecoder, so the
      * action field already carries its reading of the label, not the app's original string. The
      * RemoteInput key does not depend on this: it came from the app itself in inputKey and returned
-     * back. The host does not deliver a button with a non-ASCII label at all, see docs/wsa-shell-protocol.md,
-     * section on notification buttons.
+     * back. The host does not deliver a button with a non-ASCII label at all, see docs/protocol.md,
+     * section "Notification".
      */
     private static Notification.Action findAction(Notification n, NotificationActivation activation) {
         String replyKey = activation.getReplyKey();

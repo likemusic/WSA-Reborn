@@ -1,19 +1,19 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
-Date: Thu, 1 Oct 2026 14:43:29 +0000
-Subject: [PATCH] WSA: Android 14 r75 changes (docs/patches/vps-tree-snapshot-20260929/aosp14 + a16/0016, a16/0017), 2026-10-01
+Date: Wed, 30 Sep 2026 23:30:41 +0000
+Subject: [PATCH] WSA: Android 16 changes (docs/patches.md, a16, 2026-10-01)
 
-Change-Id: Ica05ba71cc77c9a23e7099440ab6f4d5a9f09582
+Change-Id: If45fbef01ab09bef72710acb39f8371553af365a
 ---
- .../src/android/net/NetworkCapabilities.java  | 18 ++++++----------
+ .../src/android/net/NetworkCapabilities.java  | 17 ++++++---------
  .../server/ethernet/EthernetServiceImpl.java  | 21 ++++++++++++-------
- 2 files changed, 19 insertions(+), 20 deletions(-)
+ 2 files changed, 19 insertions(+), 19 deletions(-)
 
 diff --git a/framework/src/android/net/NetworkCapabilities.java b/framework/src/android/net/NetworkCapabilities.java
-index 84a0d29..fedb16a 100644
+index 1d9c235..bc3b58d 100644
 --- a/framework/src/android/net/NetworkCapabilities.java
 +++ b/framework/src/android/net/NetworkCapabilities.java
-@@ -1769,18 +1769,12 @@ public final class NetworkCapabilities implements Parcelable {
+@@ -1803,17 +1803,12 @@ public final class NetworkCapabilities implements Parcelable {
       */
      public @NonNull NetworkCapabilities setNetworkSpecifier(
              @NonNull NetworkSpecifier networkSpecifier) {
@@ -23,8 +23,7 @@ index 84a0d29..fedb16a 100644
 -                // use the same specifier, TelephonyNetworkSpecifier.
 -                && mTransportTypes != (1L << TRANSPORT_TEST)
 -                && Long.bitCount(mTransportTypes & ~(1L << TRANSPORT_TEST)) != 1
--                && (mTransportTypes & ~(1L << TRANSPORT_TEST))
--                != (1 << TRANSPORT_CELLULAR | 1 << TRANSPORT_SATELLITE)) {
+-                && !specifierAcceptableForMultipleTransports(mTransportTypes)) {
 -            throw new IllegalStateException("Must have a single non-test transport specified to "
 -                    + "use setNetworkSpecifier");
 -        }
@@ -33,13 +32,13 @@ index 84a0d29..fedb16a 100644
 +        // source) calls setNetworkSpecifier() with a set of transports that
 +        // this check rejects on this Android/Connectivity module version -
 +        // apparently SystemApp was built against a different API revision. Relax
-+        // the check for our build; see docs/microsoft-components-checklist.md,
-+        // docs/findings.md, 18.09.2026 ("Must have a single non-test transport").
++        // the check for our build; see docs/architecture.md
++        // (the error was "Must have a single non-test transport").
          mNetworkSpecifier = networkSpecifier;
  
          return this;
 diff --git a/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java b/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java
-index b8689d6..d273e6b 100644
+index 21b9b1d..b78998a 100644
 --- a/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java
 +++ b/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java
 @@ -69,8 +69,13 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
@@ -52,9 +51,9 @@ index b8689d6..d273e6b 100644
 +        // capabilities, expecting this check to mean nothing on a non-
 +        // automotive device (WSA itself does not declare itself automotive).
 +        // On Android 13/AOSP GSI the same check was removed with a byte patch of
-+        // service-connectivity.jar (docs/findings.md, "enforceAutomotiveDevice patch");
++        // service-connectivity.jar (the "enforceAutomotiveDevice patch");
 +        // here, since we have the sources, we remove it at the source level -
-+        // cleaner and survives a rebuild. See docs/microsoft-components-checklist.md.
++        // cleaner and survives a rebuild. See docs/architecture.md.
      }
  
      @CheckResult
@@ -72,7 +71,7 @@ index b8689d6..d273e6b 100644
 +        // NetworkCapabilities without the single TRANSPORT_ETHERNET expected
 +        // by this check - the same kind of API version mismatch as
 +        // enforceAutomotiveDevice/setNetworkSpecifier slightly earlier in the chain.
-+        // Relax it; see docs/microsoft-components-checklist.md.
++        // Relax it; see docs/architecture.md.
 +        return;
      }
  

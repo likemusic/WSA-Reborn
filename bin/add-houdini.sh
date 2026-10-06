@@ -35,7 +35,7 @@
 #     /system/bin/houdini{,64} to the corresponding /system_ext paths.
 # system_ext needs ~215 MB and ~650 inodes; if short, the image grows in 128 MiB steps. This does not
 # work for a tree build (system_ext inodes there are "used + 0.2 %" and the inode grid is sparse) — there
-# the files must enter the build as proprietary blobs, see docs/findings.md, 28.09.2026.
+# the files must enter the build as proprietary blobs (found 28.09.2026).
 set -euo pipefail
 . "$(dirname "$0")/wsa-env.sh"
 

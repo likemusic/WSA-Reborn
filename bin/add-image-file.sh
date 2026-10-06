@@ -15,7 +15,7 @@
 # logcat_forwarder to /product/bin — the directory got the logcat_forwarder_exec label, and init, having
 # only read access to such a file, would not have been able to enter the directory.
 #
-# Pitfalls this script exists for (see also bin/patch-system-file.sh and docs/findings.md, 18.09.2026):
+# Pitfalls this script exists for (found 18.09.2026; see also bin/patch-system-file.sh):
 #   * `debugfs write` creates a file only in the session's CURRENT directory — hence `cd` first;
 #   * `sif <path> mode` expects the FULL st_mode (with type bits: 0100xxx file, 040xxx directory),
 #     otherwise the inode gets corrupted (`Type: bad type`);

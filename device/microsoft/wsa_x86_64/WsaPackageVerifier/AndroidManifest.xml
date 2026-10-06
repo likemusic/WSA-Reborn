@@ -3,8 +3,8 @@
      via the host. A separate package rather than part of the bridge, exactly like Microsoft (UserApp): the platform
      signature WITHOUT sharedUserId gives the SELinux domain platform_app, which the platform allows to
      read apks from the install session directory (apk_tmp_file). For the bridge (system_app) this is forbidden by a
-     neverallow in system/sepolicy/public/app.te. Analysis — docs/wsa-shell-protocol.md,
-     "Package verification at install (AMSI)". -->
+     neverallow in system/sepolicy/public/app.te. Analysis — docs/protocol.md,
+     section "FileSystem" (install-time scanning, AMSI). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.wsalineage.packageverifier">
 

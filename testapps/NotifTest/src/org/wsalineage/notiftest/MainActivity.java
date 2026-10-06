@@ -26,11 +26,11 @@ import android.widget.Toast;
  *   am start ... -e kind reply -e button Reply
  *                                — reply button label (default "Ответить"). The host does not escape
  *                                  the label in the toast arguments, and a button with a non-ASCII label is
- *                                  dead in Windows — see docs/wsa-shell-protocol.md, notification buttons section
+ *                                  dead in Windows — see docs/architecture.md, "Known limitations"
  *   am start ... -e cancel 1     — remove all posted notifications
  *   am start ... -e kind toast [-e text '…'] [-e long 1]
  *                                — a popup message (Toast); in Windows it is shown by
- *                                  SystemUI with patch 0012 via the bridge, see docs/wsa-shell-protocol.md
+ *                                  SystemUI with patch 0012 via the bridge, see docs/protocol.md, section "Notification"
  *
  * Since Android 13 the notification permission is requested from the user, and we have no window:
  *   pm grant org.wsalineage.notiftest android.permission.POST_NOTIFICATIONS

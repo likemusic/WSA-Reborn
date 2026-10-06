@@ -6,8 +6,8 @@
 // Windows media panel (taskbar volume flyout, lock screen) and sends back presses of its
 // buttons and media keys (MediaKeyPress). Sessions are distinguished by package name. In Microsoft's image the guest
 // half is SystemMediaControlsRedirectionHandler from UserApp.apk; the schema is checked against the descriptor from
-// WsaClient.exe (bin/proto-from-wsaclient.py). Analysis: docs/wsa-shell-protocol.md, section on the
-// SystemMediaControls channel.
+// WsaClient.exe (bin/proto-from-wsaclient.py). Analysis: docs/protocol.md, section on the
+// SystemMediaControlsChannel channel.
 syntax = "proto2";
 
 // Own package: other channels also have Result and MessageType. The package name does not go on the wire.

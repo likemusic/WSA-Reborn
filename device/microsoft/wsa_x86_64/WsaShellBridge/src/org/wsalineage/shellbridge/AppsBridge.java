@@ -11,8 +11,8 @@
  * AppsRedirectionHandler and AppCompat from SystemApp.apk; the code here is our own. Differences are deliberate
  * and marked in place: package info is read with one query instead of four, an icon without
  * dimensions or a too-heavy icon does not break the listing, the receiver for our own intent
- * is declared non-exported (required since Android 14). Analysis — docs/wsa-shell-protocol.md,
- * section "The "Apps" channel".
+ * is declared non-exported (required since Android 14). Analysis — docs/protocol.md,
+ * section "Apps".
  */
 package org.wsalineage.shellbridge;
 

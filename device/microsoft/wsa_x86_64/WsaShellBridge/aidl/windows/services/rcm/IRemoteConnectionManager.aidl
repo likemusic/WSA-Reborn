@@ -1,7 +1,7 @@
 // Recovered from the windows.services.rcm.IRemoteConnectionManager$Stub stub compiled into
 // SystemUIApp.apk. Stable AIDL, VERSION = 1, HASH = 3d32e9ac06b42f2072c4eae5b628f45050ce07ba.
 // Service: ServiceManager.waitForDeclaredService("windows.services.rcm.IRemoteConnectionManager/default")
-// — implemented by /vendor/bin/hw/windows.services.rcm@1.0-service (rcmsvc), see docs/wsa-shell-protocol.md.
+// — implemented by /vendor/bin/hw/windows.services.rcm@1.0-service (rcmsvc), see docs/protocol.md, section "Transport".
 package windows.services.rcm;
 
 interface IRemoteConnectionManager {

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 23:36:40 +0000
-Subject: [PATCH 1/2] WSA: Android 15 changes (docs/patches/a15 + a16/0016, a16/0017), 2026-10-01
+Subject: [PATCH 1/2] WSA: Android 15 changes (docs/patches.md, a15 + a16/0016, a16/0017), 2026-10-01
 
 Change-Id: I584957ff7edb41e59417eaf73ece1d001519bb08
 ---
@@ -111,7 +111,7 @@ index dde4b34ea..9be32960c 100644
      // used in relayout to get SurfaceControl size
      // for BLAST adapter surface setup
      private final Point mSurfaceSize = new Point();
-+    // WSA: the surface has a stretch-resize crop on it (docs/patches/a16/0017).
++    // WSA: the surface has a stretch-resize crop on it (docs/patches.md, a16/0017).
 +    private boolean mWsaDragResizeCropped;
      private final Point mLastSurfaceSize = new Point();
  
@@ -122,7 +122,7 @@ index dde4b34ea..9be32960c 100644
                  // resizing to a larger size).
 +                // WSA: immediately, not in mTransaction until some random apply(): otherwise the crop of the last
 +                // stretch takes effect later, on a surface change without stretching (F11 after
-+                // "restore"), and cuts a 2560x1600 frame down to the old 1296x927. docs/patches/a16/0017.
++                // "restore"), and cuts a 2560x1600 frame down to the old 1296x927. docs/patches.md, a16/0017.
                  mTransaction.setWindowCrop(mSurfaceControl,
 -                        mWinFrameInScreen.width(), mWinFrameInScreen.height());
 +                        mWinFrameInScreen.width(), mWinFrameInScreen.height()).apply();
@@ -199,7 +199,7 @@ index c7a47b18f..d070b6d44 100644
  
 +        // WSA: the SystemUI clipboard preview is drawn on the Windows desktop as a separate window
 +        // on top of everything, and the copy goes to the Windows clipboard anyway (bridge Clipboard channel). Stock
-+        // Microsoft has no preview. docs/patches/a16/0016, 2026-09-30.
++        // Microsoft has no preview. docs/patches.md, a16/0016, 2026-09-30.
 +        if (true) return;
 +
          // user should not access intents before setup or while device is locked

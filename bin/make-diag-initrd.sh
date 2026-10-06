@@ -4,8 +4,8 @@
 #   bin/make-diag-initrd.sh [where to put the initrd]
 #
 # WHY. The stock WSA initrd (`Tools/initrd.img`) is unusable for the local
-# stand — in OUR install (built as WSABuilds/MagiskOnWSALocal, see
-# docs/findings.md) it is patched with the chain `lspinit → magiskinit → wsainit`, and
+# stand — in OUR install (built as WSABuilds/MagiskOnWSALocal)
+# it is patched with the chain `lspinit → magiskinit → wsainit`, and
 # `lspinit` under bare QEMU crashes in the second second ("Hello from lspinit..."
 # → `WSL (1) ERROR: InitEntryUtilityVm: fcntl failed 9` → "Attempted to kill
 # init"), since it expects a communication channel to the Windows host (hvsocket), which
@@ -23,7 +23,7 @@
 # as in qemu-boot.sh — by default T=$WSA_WORK/diag, and a static
 # busybox lives right there ($T/busybox); the system (Ubuntu from apt) has neither
 # a static busybox nor cpio — both are taken from this same directory
-# (the shim wrapper $T/shim/cpio runs `busybox cpio`, see docs/findings.md).
+# (the shim wrapper $T/shim/cpio runs `busybox cpio`).
 set -euo pipefail
 
 T="${T:-${WSA_WORK:-$HOME/wsa-work}/diag}"
@@ -73,7 +73,7 @@ echo "--- system root contents:"
 # after 10014ms" -> InitFatalReboot. The real cause of the Android 14 crash was
 # elsewhere (see below) — on a live WSA the first stage of init mounts vendor by itself
 # from fstab, without our help, exactly as happens with Microsoft's
-# image (see docs/findings.md, "continuation 24-25").
+# image.
 
 # system_ext/product are NOT mounted — Android init's first stage does not need them,
 # it will now find the right fstab itself via /vendor and mount the rest from
@@ -97,8 +97,8 @@ echo "--- are there startup rules:"
 # a manual pivot_root/chroot+exec that keeps exactly ONE background busybox process
 # alive in the new namespace, firing the retrigger with a delay
 # (it must land in the window between init opening the netlink socket and the expiry of
-# its 10-second timeout). Not done 15.09.2026 — see docs/findings.md,
-# "continuation 26": decided not to waste effort on a stand artifact that
+# its 10-second timeout). Not done 15.09.2026:
+# decided not to waste effort on a stand artifact that
 # probably does not exist on real Hyper-V (its synthetic SCSI controller is
 # noticeably slower than QEMU virtio-scsi, the race may simply not occur).
 echo "=== handing control to Android init ==="

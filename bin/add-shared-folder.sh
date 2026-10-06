@@ -18,8 +18,8 @@
 # sepolicy (wsa_shared_folder.te, property_contexts, file_contexts).
 #
 # The host gives the guest the windows_user disk only if "share user folders" is enabled in the
-# WSA settings, and decides this when the subsystem starts. Details — docs/wsa-shell-protocol.md,
-# section on the Windows user shared folder.
+# WSA settings, and decides this when the subsystem starts. Details — docs/protocol.md,
+# section "FileSystem", and docs/architecture.md.
 set -euo pipefail
 
 IMG="${1:?system_ext.img (raw ext4, writable)}"

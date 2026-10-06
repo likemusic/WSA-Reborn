@@ -18,8 +18,8 @@
  * At Microsoft this is /system_ext/bin/mount_shared_folder (source device/microsoft/latte/native/bin/
  * mount_shared_folder/main.cpp, unpublished); the behaviour is reproduced from its strings and the reference
  * init script, the code is our own. Runs in the vold domain: the file is labeled vold_exec, and vold's permissions for
- * such a mount are in sepolicy/wsa_shared_folder.te. Analysis — docs/wsa-shell-protocol.md, section
- * "Windows user shared folder".
+ * such a mount are in sepolicy/wsa_shared_folder.te. Analysis — docs/protocol.md, section
+ * "FileSystem".
  */
 #include <errno.h>
 #include <stdio.h>

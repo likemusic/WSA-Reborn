@@ -3,7 +3,7 @@
 // device/microsoft/wsa-houdini/houdini.mk, created by bin/extract-houdini-blobs.sh; it also
 // pulls in these modules. Why system_ext and not links to /vendor, as at Microsoft: the Android 14
 // linker checks the real path, the default namespace allows /system_ext/${LIB},
-// but not /vendor. Analysis — docs/findings.md, 28.09.2026.
+// but not /vendor (found 28.09.2026).
 
 install_symlink {
     name: "wsa_houdini_link_lib64_libhoudini_so",

@@ -1,9 +1,9 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
-Date: Mon, 5 Oct 2026 09:39:51 +0000
-Subject: [PATCH 1/2] WSA: lineage21 changes (docs/patches/vps-tree-snapshot-20260929/lineage21), 2026-10-05
+Date: Thu, 1 Oct 2026 14:43:29 +0000
+Subject: [PATCH 1/2] WSA: Android 14 r75 changes (docs/patches.md + a16/0016, a16/0017), 2026-10-01
 
-Change-Id: I931a91f7de5a8072956769662b373ff7dde557a2
+Change-Id: I59ac48d33c6607c6c7a3d473d277f212c7aed6d9
 ---
  core/java/android/app/AppOpsManager.java      |  36 ++++-
  core/java/android/view/ViewRootImpl.java      |  13 +-
@@ -78,7 +78,7 @@ index a7cb1696e..886ecca34 100644
      // used in relayout to get SurfaceControl size
      // for BLAST adapter surface setup
      private final Point mSurfaceSize = new Point();
-+    // WSA: the surface has a stretch-resize crop on it (docs/patches/a16/0017).
++    // WSA: the surface has a stretch-resize crop on it (docs/patches.md, a16/0017).
 +    private boolean mWsaDragResizeCropped;
      private final Point mLastSurfaceSize = new Point();
  
@@ -89,7 +89,7 @@ index a7cb1696e..886ecca34 100644
                  // resizing to a larger size).
 +                // WSA: immediately, not in mTransaction until some random apply(): otherwise the crop of the last
 +                // stretch takes effect later, on a surface change without stretching (F11 after
-+                // "restore"), and cuts a 2560x1600 frame down to the old 1296x927. docs/patches/a16/0017.
++                // "restore"), and cuts a 2560x1600 frame down to the old 1296x927. docs/patches.md, a16/0017.
                  mTransaction.setWindowCrop(mSurfaceControl,
 -                        mWinFrameInScreen.width(), mWinFrameInScreen.height());
 +                        mWinFrameInScreen.width(), mWinFrameInScreen.height()).apply();
@@ -165,7 +165,7 @@ index c7a47b18f..d070b6d44 100644
  
 +        // WSA: the SystemUI clipboard preview is drawn on the Windows desktop as a separate window
 +        // on top of everything, and the copy goes to the Windows clipboard anyway (bridge Clipboard channel). Stock
-+        // Microsoft has no preview. docs/patches/a16/0016, 2026-09-30.
++        // Microsoft has no preview. docs/patches.md, a16/0016, 2026-09-30.
 +        if (true) return;
 +
          // user should not access intents before setup or while device is locked

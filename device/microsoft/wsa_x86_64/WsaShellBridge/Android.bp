@@ -1,4 +1,4 @@
-// WsaShellBridge — our own implementation of the WSA "Shell" channel protocol (docs/wsa-shell-protocol.md).
+// WsaShellBridge — our own implementation of the WSA "Shell" channel protocol (docs/protocol.md).
 // Contains nothing from Microsoft images: the .proto/.aidl files were reconstructed from the wire format.
 android_app {
     name: "WsaShellBridge",

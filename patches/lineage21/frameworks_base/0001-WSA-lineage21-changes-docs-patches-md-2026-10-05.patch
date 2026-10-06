@@ -1,67 +1,50 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
-Date: Wed, 30 Sep 2026 23:30:40 +0000
-Subject: [PATCH] WSA: Android 16 changes (docs/patches/a16, 2026-10-01)
+Date: Mon, 5 Oct 2026 09:39:51 +0000
+Subject: [PATCH 1/2] WSA: lineage21 changes (docs/patches.md), 2026-10-05
 
-Change-Id: I2bd96c3a709977824aa1c4880ad6b6890cc62614
+Change-Id: I931a91f7de5a8072956769662b373ff7dde557a2
 ---
- core/java/android/app/AppOpsManager.java      |  51 ++++++-
- .../android/hardware/input/InputManager.java  |   6 +-
+ core/java/android/app/AppOpsManager.java      |  36 ++++-
  core/java/android/view/ViewRootImpl.java      |  13 +-
- .../shell/windowdecor/WindowDecoration.java   |  25 +++-
+ .../shell/windowdecor/WindowDecoration.java   |  19 ++-
  .../clipboardoverlay/ClipboardListener.java   |   5 +
  .../com/android/systemui/toast/ToastUI.java   |  12 ++
  .../systemui/toast/WsaToastForwarder.java     | 137 ++++++++++++++++++
- .../android/server/compat/PlatformCompat.java |   6 +-
- .../webkit/WebViewUpdateServiceImpl2.java     |  13 ++
  .../wm/WsaDisplayAreaPolicyProvider.java      |  38 +++++
- 10 files changed, 290 insertions(+), 16 deletions(-)
+ 7 files changed, 253 insertions(+), 7 deletions(-)
  create mode 100644 packages/SystemUI/src/com/android/systemui/toast/WsaToastForwarder.java
  create mode 100644 services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java
 
 diff --git a/core/java/android/app/AppOpsManager.java b/core/java/android/app/AppOpsManager.java
-index 01fc340f4..f82d3581b 100644
+index 62f9b5918..61afb7cc6 100644
 --- a/core/java/android/app/AppOpsManager.java
 +++ b/core/java/android/app/AppOpsManager.java
-@@ -9174,12 +9174,31 @@ public class AppOpsManager {
-                     try {
-                         executor.execute(() -> {
-                             if (sAppOpInfos[op].name != null) {
--                                if (Flags.deviceAwarePermissionApisEnabled()) {
--                                    listener.onOpNoted(sAppOpInfos[op].name, uid, packageName,
--                                            attributionTag, virtualDeviceId, flags, mode);
--                                } else {
+@@ -8641,8 +8641,21 @@ public class AppOpsManager {
+                                     listener.onOpNoted(sAppOpInfos[op].name, uid, packageName,
+                                             attributionTag, virtualDeviceId, flags, mode);
+                                 } else {
 -                                    listener.onOpNoted(sAppOpInfos[op].name, uid, packageName,
 -                                            attributionTag, flags, mode);
-+                                try {
-+                                    if (Flags.deviceAwarePermissionApisEnabled()) {
-+                                        // WSA: the default 7-argument method calls the abstract
-+                                        // 6-argument one, so an API 33 listener fails here too.
-+                                        listener.onOpNoted(sAppOpInfos[op].name, uid, packageName,
-+                                                attributionTag, virtualDeviceId, flags, mode);
-+                                    } else {
++                                    try {
 +                                        listener.onOpNoted(sAppOpInfos[op].name, uid, packageName,
 +                                                attributionTag, flags, mode);
-+                                    }
-+                                } catch (AbstractMethodError e) {
-+                                    // WSA: listeners compiled against API 33 (Microsoft
-+                                    // SystemApp, PermissionUsageRedirectionHandler) implement
-+                                    // the pre-U signature onOpNoted(int op, ...) only; the
-+                                    // AbstractMethodError would kill the persistent process,
-+                                    // and its restart re-runs EthernetManager.updateConfiguration
-+                                    // which tears the network down for ~300 ms.
-+                                    if (Flags.deviceAwarePermissionApisEnabled()
-+                                            && virtualDeviceId != Context.DEVICE_ID_DEFAULT) {
-+                                        return;
-+                                    }
-+                                    if (!invokeLegacyOnOpNoted(listener, op, uid, packageName,
-+                                            attributionTag, flags, mode)) {
-+                                        throw e;
++                                    } catch (AbstractMethodError e) {
++                                        // WSA: listeners compiled against API 33 (Microsoft
++                                        // SystemApp, PermissionUsageRedirectionHandler) implement
++                                        // the pre-U signature onOpNoted(int op, ...) only; the
++                                        // AbstractMethodError would kill the persistent process,
++                                        // and its restart re-runs EthernetManager.updateConfiguration
++                                        // which tears the network down for ~300 ms.
++                                        if (!invokeLegacyOnOpNoted(listener, op, uid, packageName,
++                                                attributionTag, flags, mode)) {
++                                            throw e;
++                                        }
 +                                    }
                                  }
                              }
                          });
-@@ -9197,6 +9216,26 @@ public class AppOpsManager {
+@@ -8660,6 +8673,25 @@ public class AppOpsManager {
          }
      }
  
@@ -79,8 +62,7 @@ index 01fc340f4..f82d3581b 100644
 +        } catch (NoSuchMethodException e) {
 +            return false;
 +        } catch (ReflectiveOperationException e) {
-+            android.util.Log.e("AppOpsManager",
-+                    "legacy onOpNoted failed for " + listener.getClass().getName(), e);
++            Log.e(DEBUG_LOGGING_TAG, "legacy onOpNoted failed for " + listener.getClass().getName(), e);
 +            return true;
 +        }
 +    }
@@ -88,43 +70,26 @@ index 01fc340f4..f82d3581b 100644
      /**
       * Stop watching for noted app ops. An app op may be immediate or long running.
       * Unregistering a non-registered callback has no effect.
-diff --git a/core/java/android/hardware/input/InputManager.java b/core/java/android/hardware/input/InputManager.java
-index a66ac76d7..ea5761e49 100644
---- a/core/java/android/hardware/input/InputManager.java
-+++ b/core/java/android/hardware/input/InputManager.java
-@@ -585,7 +585,11 @@ public final class InputManager {
-     @NonNull
-     public KeyboardLayout[] getKeyboardLayoutsForInputDevice(
-             @NonNull InputDeviceIdentifier identifier) {
--        return new KeyboardLayout[0];
-+        // WSA: Microsoft's SystemApp (API 33) looks up keyboard_layout_english_us here for
-+        // virtual_keyboard and, not finding it, waits forever in KeyboardSetup.waitForKeyboardReady - initialization
-+        // (network, channels) never proceeds. Return all system layouts, as before Android 15;
-+        // setCurrentKeyboardLayoutForInputDevice stays a stub, the layout is chosen normally.
-+        return getKeyboardLayouts();
-     }
- 
-     /**
 diff --git a/core/java/android/view/ViewRootImpl.java b/core/java/android/view/ViewRootImpl.java
-index 2d62ed8c3..75f9e7870 100644
+index a7cb1696e..886ecca34 100644
 --- a/core/java/android/view/ViewRootImpl.java
 +++ b/core/java/android/view/ViewRootImpl.java
-@@ -703,6 +703,8 @@ public final class ViewRootImpl implements ViewParent,
+@@ -613,6 +613,8 @@ public final class ViewRootImpl implements ViewParent,
      // used in relayout to get SurfaceControl size
      // for BLAST adapter surface setup
      private final Point mSurfaceSize = new Point();
-+    // WSA: the surface has a stretch-resize crop on it (docs/patches/a16/0017).
++    // WSA: the surface has a stretch-resize crop on it (docs/patches.md, a16/0017).
 +    private boolean mWsaDragResizeCropped;
      private final Point mLastSurfaceSize = new Point();
  
      private final Rect mVisRect = new Rect(); // used to retrieve visible rect of focused view.
-@@ -9622,12 +9624,21 @@ public final class ViewRootImpl implements ViewParent,
+@@ -8950,12 +8952,21 @@ public final class ViewRootImpl implements ViewParent,
                  // Crop to the content size instead of the surface size to avoid exposing garbage
                  // content that is still on the surface from previous re-layouts (e.g. when
                  // resizing to a larger size).
 +                // WSA: immediately, not in mTransaction until some random apply(): otherwise the crop of the last
 +                // stretch takes effect later, on a surface change without stretching (F11 after
-+                // "restore"), and cuts a 2560x1600 frame down to the old 1296x927. docs/patches/a16/0017.
++                // "restore"), and cuts a 2560x1600 frame down to the old 1296x927. docs/patches.md, a16/0017.
                  mTransaction.setWindowCrop(mSurfaceControl,
 -                        mWinFrameInScreen.width(), mWinFrameInScreen.height());
 +                        mWinFrameInScreen.width(), mWinFrameInScreen.height()).apply();
@@ -142,13 +107,13 @@ index 2d62ed8c3..75f9e7870 100644
          }
  
 diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration.java b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration.java
-index 6a9b366df..2c191679f 100644
+index 32c2d1e9b..82ee25e50 100644
 --- a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration.java
 +++ b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration.java
-@@ -157,6 +157,13 @@ public abstract class WindowDecoration<T extends View & TaskFocusStateConsumer>
+@@ -130,6 +130,13 @@ public abstract class WindowDecoration<T extends View & TaskFocusStateConsumer>
      private Configuration mWindowDecorConfig;
      TaskDragResizer mTaskDragResizer;
-     boolean mIsCaptionVisible;
+     private boolean mIsCaptionVisible;
 +    // WSA (Windows Subsystem for Android): the window frame, title and shadow are drawn by the Windows host
 +    // (WsaClient.exe); the guest caption decoration adds a second title bar inside the window. The flag is set
 +    // in device/microsoft/wsa_x86_64 (ro.wsa.host_window_decor=true); the task geometry
@@ -157,65 +122,57 @@ index 6a9b366df..2c191679f 100644
 +    private static final boolean HOST_WINDOW_DECOR =
 +            android.os.SystemProperties.getBoolean("ro.wsa.host_window_decor", false);
  
-     boolean mIsStatusBarVisible;
-     boolean mIsKeyguardVisibleAndOccluded;
-@@ -439,13 +446,17 @@ public abstract class WindowDecoration<T extends View & TaskFocusStateConsumer>
-         startT.reparent(captionSurface, mDecorationContainerSurface)
-                 .setWindowCrop(captionSurface, outResult.mCaptionWidth, outResult.mCaptionHeight)
-                 .setPosition(captionSurface, outResult.mCaptionX, 0 /* y */)
--                .setLayer(captionSurface, CAPTION_LAYER_Z_ORDER)
--                .show(captionSurface);
-+                .setLayer(captionSurface, CAPTION_LAYER_Z_ORDER);
+     private final Binder mOwner = new Binder();
+     private final Rect mCaptionInsetsRect = new Rect();
+@@ -290,14 +297,18 @@ public abstract class WindowDecoration<T extends View & TaskFocusStateConsumer>
+         startT.setWindowCrop(mCaptionContainerSurface, outResult.mCaptionWidth,
+                         outResult.mCaptionHeight)
+                 .setPosition(mCaptionContainerSurface, outResult.mCaptionX, 0 /* y */)
+-                .setLayer(mCaptionContainerSurface, CAPTION_LAYER_Z_ORDER)
+-                .show(mCaptionContainerSurface);
++                .setLayer(mCaptionContainerSurface, CAPTION_LAYER_Z_ORDER);
 +        if (HOST_WINDOW_DECOR) {
-+            startT.hide(captionSurface);
++            startT.hide(mCaptionContainerSurface);
 +        } else {
-+            startT.show(captionSurface);
++            startT.show(mCaptionContainerSurface);
 +        }
-     }
  
-     private void updateCaptionInsets(RelayoutParams params, WindowContainerTransaction wct,
-             RelayoutResult<T> outResult, Rect taskBounds) {
--        if (!mIsCaptionVisible || !params.mIsInsetSource) {
-+        if (!mIsCaptionVisible || !params.mIsInsetSource || HOST_WINDOW_DECOR) {
-             if (mWindowDecorationInsets != null) {
-                 mWindowDecorationInsets.remove(wct);
-                 mWindowDecorationInsets = null;
-@@ -509,13 +520,13 @@ public abstract class WindowDecoration<T extends View & TaskFocusStateConsumer>
+         if (ViewRootImpl.CAPTION_ON_SHELL) {
+             outResult.mRootView.setTaskFocusState(mTaskInfo.isFocused);
  
-         if (DesktopExperienceFlags.ENABLE_DYNAMIC_RADIUS_COMPUTATION_BUGFIX.isTrue()) {
-             if (outResult.mShadowRadius != INVALID_SHADOW_RADIUS) {
--                startT.setShadowRadius(mTaskSurface, outResult.mShadowRadius);
--                finishT.setShadowRadius(mTaskSurface, outResult.mShadowRadius);
-+                startT.setShadowRadius(mTaskSurface, HOST_WINDOW_DECOR ? 0 : outResult.mShadowRadius);
-+                finishT.setShadowRadius(mTaskSurface, HOST_WINDOW_DECOR ? 0 : outResult.mShadowRadius);
-             }
+             // Caption insets
+-            if (mIsCaptionVisible) {
++            if (mIsCaptionVisible && !HOST_WINDOW_DECOR) {
+                 // Caption inset is the full width of the task with the |captionHeight| and
+                 // positioned at the top of the task bounds, also in absolute coordinates.
+                 // So just reuse the task bounds and adjust the bottom coordinate.
+@@ -356,7 +367,7 @@ public abstract class WindowDecoration<T extends View & TaskFocusStateConsumer>
+             // Shadow is not needed for fullscreen tasks
+             shadowRadius = 0;
          } else {
-             if (params.mShadowRadius != INVALID_SHADOW_RADIUS) {
--                startT.setShadowRadius(mTaskSurface, params.mShadowRadius);
--                finishT.setShadowRadius(mTaskSurface, params.mShadowRadius);
-+                startT.setShadowRadius(mTaskSurface, HOST_WINDOW_DECOR ? 0 : params.mShadowRadius);
-+                finishT.setShadowRadius(mTaskSurface, HOST_WINDOW_DECOR ? 0 : params.mShadowRadius);
-             }
+-            shadowRadius = loadDimension(resources, params.mShadowRadiusId);
++            shadowRadius = HOST_WINDOW_DECOR ? 0 : loadDimension(resources, params.mShadowRadiusId);
          }
  
+         if (params.mSetTaskPositionAndCrop) {
 diff --git a/packages/SystemUI/src/com/android/systemui/clipboardoverlay/ClipboardListener.java b/packages/SystemUI/src/com/android/systemui/clipboardoverlay/ClipboardListener.java
-index c0c4ec335..27dff785f 100644
+index c7a47b18f..d070b6d44 100644
 --- a/packages/SystemUI/src/com/android/systemui/clipboardoverlay/ClipboardListener.java
 +++ b/packages/SystemUI/src/com/android/systemui/clipboardoverlay/ClipboardListener.java
-@@ -147,6 +147,11 @@ public class ClipboardListener implements
-             }
+@@ -97,6 +97,11 @@ public class ClipboardListener implements
+             return;
          }
  
 +        // WSA: the SystemUI clipboard preview is drawn on the Windows desktop as a separate window
 +        // on top of everything, and the copy goes to the Windows clipboard anyway (bridge Clipboard channel). Stock
-+        // Microsoft has no preview. docs/patches/a16/0016, 2026-09-30.
++        // Microsoft has no preview. docs/patches.md, a16/0016, 2026-09-30.
 +        if (true) return;
 +
          // user should not access intents before setup or while device is locked
-         if ((clipboardNoninteractiveOnLockscreen() && mKeyguardManagerForUser.isDeviceLocked())
+         if ((clipboardNoninteractiveOnLockscreen() && mKeyguardManager.isDeviceLocked())
                  || !isUserSetupComplete()
 diff --git a/packages/SystemUI/src/com/android/systemui/toast/ToastUI.java b/packages/SystemUI/src/com/android/systemui/toast/ToastUI.java
-index 12f73b8a8..d4b20d77b 100644
+index 85a455d23..7144c55a0 100644
 --- a/packages/SystemUI/src/com/android/systemui/toast/ToastUI.java
 +++ b/packages/SystemUI/src/com/android/systemui/toast/ToastUI.java
 @@ -69,6 +69,7 @@ public class ToastUI implements
@@ -246,8 +203,8 @@ index 12f73b8a8..d4b20d77b 100644
 +        }
          Runnable showToastRunnable = () -> {
              UserHandle userHandle = UserHandle.getUserHandleForUid(uid);
-             Context context;
-@@ -169,6 +177,10 @@ public class ToastUI implements
+             Context context = mContext.createContextAsUser(userHandle, 0);
+@@ -162,6 +170,10 @@ public class ToastUI implements
      @Override
      @MainThread
      public void hideToast(String packageName, IBinder token) {
@@ -401,47 +358,6 @@ index 000000000..13602ddec
 +        mContext.sendBroadcastAsUser(intent, UserHandle.SYSTEM);
 +    }
 +}
-diff --git a/services/core/java/com/android/server/compat/PlatformCompat.java b/services/core/java/com/android/server/compat/PlatformCompat.java
-index 8b6b0f941..32f5cac16 100644
---- a/services/core/java/com/android/server/compat/PlatformCompat.java
-+++ b/services/core/java/com/android/server/compat/PlatformCompat.java
-@@ -521,7 +521,11 @@ public class PlatformCompat extends IPlatformCompat.Stub {
- 
-         // b/282922910 - we don't want apps sharing system uid and targeting
-         // older target sdk to impact all system uid apps
--        if (Flags.systemUidTargetSystemSdk() && !mIsWear &&
-+        // WSA: Microsoft's SystemApp (sharedUserId system, targetSdk 33) under the substituted targetSdk
-+        // crashes during initialization (registerReceiver without RECEIVER_EXPORTED), the host never gets
-+        // networkReady and restarts the VM every ~2 min. Android 15 behaviour: uid system takes
-+        // the lowest targetSdk of its packages. docs/patches/a16/0015, 2026-09-30.
-+        if (false && Flags.systemUidTargetSystemSdk() && !mIsWear &&
-                 uid == Process.SYSTEM_UID && appInfo != null) {
-             appInfo.targetSdkVersion = mBuildClassifier.platformTargetSdk();
-         }
-diff --git a/services/core/java/com/android/server/webkit/WebViewUpdateServiceImpl2.java b/services/core/java/com/android/server/webkit/WebViewUpdateServiceImpl2.java
-index 9e8dc2690..a3506a7af 100644
---- a/services/core/java/com/android/server/webkit/WebViewUpdateServiceImpl2.java
-+++ b/services/core/java/com/android/server/webkit/WebViewUpdateServiceImpl2.java
-@@ -511,6 +511,19 @@ class WebViewUpdateServiceImpl2 {
-             Slog.w(TAG, "Default WebView package (" + mDefaultProvider.packageName + ") not found");
-         }
- 
-+        // WSA: the default provider comes from a config overlay (e.g. GApps for Android 13 declares
-+        // com.google.android.webview as isFallback) and may be absent from the image. Android 14
-+        // (WebViewUpdateServiceImpl) then took any valid provider; do the same instead of leaving
-+        // the system without WebView (Google sign-in crashes with MissingWebViewPackageException).
-+        for (ProviderAndPackageInfo candidate : getValidWebViewPackagesAndInfos()) {
-+            List<UserPackage> userPackages =
-+                    mSystemInterface.getPackageInfoForProviderAllUsers(candidate.provider);
-+            if (isInstalledAndEnabledForAllUsers(userPackages)) {
-+                Slog.w(TAG, "Default WebView package missing, using " + candidate.provider.packageName);
-+                return candidate.packageInfo;
-+            }
-+        }
-+
-         // This should never happen during normal operation (only with modified system images).
-         Counter.logIncrement("webview.value_webview_not_usable_for_all_users_counter");
-         mAnyWebViewInstalled = false;
 diff --git a/services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java b/services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java
 new file mode 100644
 index 000000000..237bb429f

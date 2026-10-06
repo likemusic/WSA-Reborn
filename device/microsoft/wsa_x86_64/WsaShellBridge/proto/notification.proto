@@ -5,7 +5,7 @@
 // these are Microsoft's genuine field numbers and enum values, not a reconstruction. Names here
 // are adapted to our style (camelCase); names do not go on the wire. Guest reference:
 // com.microsoft.windows.redirection.NotificationRedirectionHandler from SystemUIApp.apk; analysis and
-// how our implementation differs: docs/wsa-shell-protocol.md, section on the "Notification" channel.
+// how our implementation differs: docs/protocol.md, section on the "Notification" channel.
 syntax = "proto2";
 
 // Own package: "Intents" and "Clipboard" both also have a Result with the same fields.

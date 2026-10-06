@@ -16,7 +16,7 @@
  *     to skip": the reference's counters drift if the field sends one update fewer;
  *   * a field change always closes the previous session and opens a new one; in the reference a second field without
  *     an intermediate onWindowHidden is skipped ("an active session has started").
- * Protocol analysis — docs/wsa-shell-protocol.md, section "Channel "TSF"".
+ * Protocol analysis — docs/protocol.md, section "TSF".
  */
 package org.wsalineage.shellbridge;
 

@@ -3,7 +3,7 @@
  *
  * Why our own. Microsoft's geocoder is GeocodeService from SystemApp: it gets an Azure Maps key from the host over the
  * "Geocode" channel and talks to atlas.microsoft.com. The key baked into host 2407.40000.4.0
- * is rejected by the server (401 InvalidKey, docs/wsa-shell-protocol.md, "Geocode"), i.e. the geocoder is dead even
+ * is rejected by the server (401 InvalidKey, docs/architecture.md, "Known limitations"), i.e. the geocoder is dead even
  * on stock. This provider replaces it without modifying Microsoft programs: the system (ServiceWatcher,
  * config_enableGeocoderOverlay=true by default) picks among system services with the action
  * GeocodeProviderBase.ACTION_GEOCODE_PROVIDER the one with the higher serviceVersion metadata, and

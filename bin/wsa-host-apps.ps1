@@ -1,7 +1,7 @@
 ﻿# Windows-side state of Android apps — "Programs and Features" entries and Start menu shortcuts
 # that the WSA host creates on Apps channel events. The registry and Start menu are SHARED by all slots and /data pools,
 # so after switching pools the list keeps "ghost" apps of the other pool (WSABuilds#664,
-# docs/findings.md 29.09.2026). switch-data.sh stores this state together with the pool.
+# found 29.09.2026). switch-data.sh stores this state together with the pool.
 #
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File wsa-host-apps.ps1 save    <dir>
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File wsa-host-apps.ps1 clear

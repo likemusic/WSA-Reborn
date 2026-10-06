@@ -30,7 +30,7 @@ index 70ca0e4..d653e50 100644
 +// with no counterpart in open AOSP: fs_mgr takes blk_device literally, and
 +// neither androidboot.partition_map= nor androidboot.boot_devices= are passed on real
 +// WSA (checked 2026-09-15 via ro.boot.* on a live
-+// device, see docs/findings.md "continuation 28"). Extract H:C:T:L
++// device, see docs/patches.md, fix 0010). Extract H:C:T:L
 +// straight from the uevent sysfs path (".../host0/target0:0:0/0:0:0:1/block/sdX"),
 +// with no dependency on the cmdline.
 +static std::string GetUeventScsiName(const std::string& path) {

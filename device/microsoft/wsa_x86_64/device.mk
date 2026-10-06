@@ -2,7 +2,7 @@
 # guest components are transplanted after the build (bin/transplant.sh) — they must not be
 # included in the tree, they are proprietary binaries.
 
-# TEMPORARY (diagnostics 15.09.2026, see docs/findings.md "continuation 25"):
+# TEMPORARY (diagnostics 15.09.2026):
 # fstab.1.windows/fstab.2.windows — taken from Microsoft's reference system.img,
 # needed by the first stage of init (GetFstabPath looks for them in /system/etc/, not only
 # in /vendor/etc/ where the native copy lives) — without them Android 14 falls into
@@ -16,7 +16,7 @@ PRODUCT_COPY_FILES += \
 # Definition of the sysprep_service service. Until 28.09.2026 this file also set
 # vendor.sysprep.start_phase on early-init — that is what crashed the service every 5 s;
 # now, as at Microsoft, the service sets the phase itself on the host's command
-# (docs/findings.md, 28.09.2026). Placed in system_ext (our partition).
+# (found 28.09.2026). Placed in system_ext (our partition).
 PRODUCT_COPY_FILES += \
     device/microsoft/wsa_x86_64/overlay-init/init.wsa-sysprep-bypass.rc:$(TARGET_COPY_OUT_SYSTEM_EXT)/etc/init/init.wsa-sysprep-bypass.rc
 
@@ -47,7 +47,7 @@ PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
 
 # The window frame/title/shadow is drawn by the Windows host — the guest WM Shell caption decoration for
 # freeform tasks (a second header inside the window) is disabled by the WindowDecoration.java patch
-# (docs/patches/0007-wmshell-host-window-decor.diff) based on this property.
+# (fix 0007, docs/patches.md) based on this property.
 PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
     ro.wsa.host_window_decor=true
 
@@ -58,7 +58,7 @@ PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
 # ("wallpaper" is missing from `service list`), and systemui falls into an endless
 # crash-loop (NullPointerException in WallpaperManager$Globals when calling
 # lockScreenWallpaperExists() from CentralSurfacesImpl) — unrelated to the
-# surfaceflinger patch, reproduces without it too, see docs/findings.md.
+# surfaceflinger patch, reproduces without it too.
 # We restore true with OUR OWN overlay: `dumpsys overlay` on a real WSA confirmed
 # that an overlay from the product partition (auto_generated_rro_product__, priority 29) overrides
 # the overlay from vendor (priority 0) for the android package — that is enough; vendor.img need not
@@ -70,8 +70,8 @@ PRODUCT_PACKAGE_OVERLAYS += device/microsoft/wsa_x86_64/overlay
 # the user could go through it interactively. adb shell will not do for this
 # (SecurityException: Shell cannot change component state — a UID check
 # in PackageManagerService); it needs init running as system. Details of the
-# three obstacles (SELinux domain, UID, pm disable vs disable-user) — see
-# docs/findings.md, 18.09.2026. IMPORTANT: after being copied by the build, wsa-no-setupwizard.sh
+# three obstacles: SELinux domain, UID, pm disable vs disable-user (found
+# 18.09.2026). IMPORTANT: after being copied by the build, wsa-no-setupwizard.sh
 # gets the plain system_file label, while the shell domain needs exactly
 # shell_exec for entrypoint — in a normal build without a manual post-patch
 # (bin/patch-system-file.sh, ea_set security.selinux) exec will fail
@@ -82,8 +82,8 @@ PRODUCT_COPY_FILES += \
     device/microsoft/wsa_x86_64/overlay-init/wsa-no-setupwizard.sh:$(TARGET_COPY_OUT_SYSTEM_EXT)/bin/wsa-no-setupwizard.sh
 
 # Bridge "Android tasks ↔ Windows windows" — our own implementation of the RCM "Shell" channel protocol
-# (docs/wsa-shell-protocol.md). Replaces WsaTaskManager from Microsoft's SystemUIApp.apk, which does not
-# start on Android 14 (tied to the Android 13 WM Shell, see docs/findings.md, 18.09.2026).
+# (docs/protocol.md). Replaces WsaTaskManager from Microsoft's SystemUIApp.apk, which does not
+# start on Android 14 (tied to the Android 13 WM Shell, see docs/architecture.md).
 # Runs as uid system: sepolicy for hal_rcm_service/vsock for system_app is already in vendor.img.
 PRODUCT_PACKAGES += WsaShellBridge
 
@@ -101,7 +101,7 @@ $(call inherit-product-if-exists, device/microsoft/wsa-houdini/houdini.mk)
 # permissions — in sepolicy/ (file_contexts, wsa_shared_folder.te), properties — in sepolicy/property_contexts.
 PRODUCT_PACKAGES += wsa_mount_shared_folder
 
-# ---- Android 17 and newer only (SDK ≥ 37; docs/patches/a17/README.md) ----
+# ---- Android 17 and newer only (SDK ≥ 37; docs/patches.md, a17/0018, a17/0021) ----
 # The platform patch a17/0021 returns the first stage of init in A17 to /system/bin/init — the device needs nothing.
 # PLATFORM_SDK_VERSION is already set by the time the product is parsed (envsetup.mk: version_util.mk before
 # product_config.mk); in trees where this is not so, the condition simply does not fire.

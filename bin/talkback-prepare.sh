@@ -10,7 +10,7 @@
 # TalkBack crashes at startup while loading Braille (UnsatisfiedLinkError: libbrlttywrap.so, 06.10.2026).
 # The AOSP build lays out prebuilt apps the same way.
 #
-# Building the apk itself (06.10.2026, build VPS, ~2.5 min): docs/patches/talkback/README.md.
+# Building the apk itself (06.10.2026, build VPS, ~2.5 min): docs/build.md, section "TalkBack from source".
 # Signed with our own key $WSA_KEYS/talkback.jks (not the platform key: TalkBack is a regular
 # app in /system_ext/app, as in Microsoft's image).
 set -euo pipefail

@@ -10,7 +10,7 @@
 # crashed on a null pointer (ApiChannelSync::send, address 0x8). init restarted the service every
 # 5 s, and the host never received Phase1Started (startPhase1Completed=0 in BootProgressReport vs 1 on
 # stock). Now the host sends StartPhase1 itself, so the service sets the property, as on
-# Microsoft's image. Analysis — docs/findings.md, entry of 28.09.2026 about sysprep_service.
+# Microsoft's image (found 28.09.2026).
 #
 # The service definition repeats the vendor one verbatim (disabled: it is started by init.windows_x86_64.rc).
 service sysprep_service /vendor/bin/sysprep_service

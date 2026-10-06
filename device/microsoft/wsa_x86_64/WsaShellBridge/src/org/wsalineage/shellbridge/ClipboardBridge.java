@@ -4,7 +4,7 @@
  * Content is not sent over the channel — only metadata (type, offset, length). The bytes live in a
  * named Windows shared memory section, which the guest sees as the file /mnt/shared_mem/<name>
  * (virtiofs, the `shared_mem` line in fstab.*.windows). The exchange order and analysis of the reference are in
- * docs/wsa-shell-protocol.md, section "The "Clipboard" channel"; the schema is proto/clipboard.proto.
+ * docs/protocol.md, section "Clipboard"; the schema is proto/clipboard.proto.
  *
  * At Microsoft this is ClipboardRedirectionHandler + util.ClipboardContentHelper from UserApp.apk, which
  * is absent from our builds. The code here is our own; two differences from the reference are intentional and marked

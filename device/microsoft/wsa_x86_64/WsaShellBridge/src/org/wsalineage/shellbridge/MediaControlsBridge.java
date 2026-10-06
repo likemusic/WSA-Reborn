@@ -21,7 +21,7 @@
  *     and not resent if unchanged; for a track without artwork it is reset with an empty
  *     image — the reference kept the previous track's artwork; state and buttons are also sent only on change
  *     (players report the playback position every second).
- * Analysis — docs/wsa-shell-protocol.md, section "SystemMediaControls channel".
+ * Analysis — docs/protocol.md, section "SystemMediaControlsChannel".
  */
 package org.wsalineage.shellbridge;
 

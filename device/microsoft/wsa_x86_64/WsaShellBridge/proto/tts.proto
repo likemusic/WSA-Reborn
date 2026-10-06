@@ -4,7 +4,7 @@
 // replies with the same message with result and the filled-in response; audio arrives whole in one buffer.
 // The host sends no requests itself. At Microsoft the guest half is LatteTextToSpeechService and
 // TextToSpeechRedirectionHandler from UserApp.apk; the schema is checked against the descriptor from WsaClient.exe
-// (bin/proto-from-wsaclient.py). Analysis — docs/wsa-shell-protocol.md, the TextToSpeech channel section.
+// (bin/proto-from-wsaclient.py). Analysis — docs/protocol.md, the TextToSpeech channel section.
 syntax = "proto2";
 
 // Own package: other channels also have MessageType. The package name does not go on the wire.

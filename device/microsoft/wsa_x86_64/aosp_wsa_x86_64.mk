@@ -10,16 +10,14 @@
 # Android 14 on the current WSA vendor/kernel (Android 13) or specific to the
 # LineageOS build/code. This target is the same test on the most neutral base,
 # closest to Google's reference: if it fails the same way, the problem is Android 14
-# in general; if it boots, the problem is LineageOS. See docs/findings.md, the end of
-# "continuation 21".
+# in general; if it boots, the problem is LineageOS.
 #
 # The base is ONLY the system partition from the stock AOSP GSI target
 # (generic_system_x86_64.mk). We deliberately do NOT take handheld_system_ext.mk /
 # telephony_system_ext.mk / aosp_product.mk — they are meant for a full-featured
 # phone (APN, telephony, etc.) and bring conflicts with Soong installs of the
 # same paths (PRODUCT_COPY_FILES is resolved through the deferred product graph —
-# filtering it in a child .mk did not work, see the history in
-# docs/findings.md). None of that is needed to check "does Android 14 boot at all on this
+# filtering it in a child .mk did not work). None of that is needed to check "does Android 14 boot at all on this
 # vendor/kernel" — system_ext/product can be
 # minimal, as long as they exist as separate partitions (WSA mounts them
 # as separate disks).
@@ -67,7 +65,7 @@ PRODUCT_PRODUCT_PROPERTIES += ro.control_privapp_permissions=disable
 # (the first build on 22.09.2026 produced a 1.3 MB system_ext with just WsaShellBridge). We take from
 # handheld_system_ext.mk / handheld_product.mk exactly what windows and settings need,
 # without inheriting the .mk files themselves (they bring telephony and PRODUCT_COPY_FILES conflicts, see above).
-# SystemUI is mandatory: it hosts WM Shell (patch docs/patches/0007, Shell Transitions),
+# SystemUI is mandatory: it hosts WM Shell (patch 0007, docs/patches.md, Shell Transitions),
 # without which freeform tasks do not move along the host's bounds.
 # Launcher is TrebuchetQuickStep: the LineageOS tree has no packages/apps/Launcher3 at all (replaced by
 # Trebuchet, vendor/lineage/config/common.mk excludes Launcher3* from the existence check),

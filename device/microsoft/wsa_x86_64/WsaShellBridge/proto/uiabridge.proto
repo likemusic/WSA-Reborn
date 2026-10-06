@@ -7,7 +7,7 @@
 // HKCU\Software\Microsoft\WSA\UiaBridgeEnabled through the UiaBridge setting of the "Settings" channel. At
 // Microsoft the guest half is UIABridgeRedirectionHandler and UIABridgeAccessibilityService from
 // UserApp.apk; the schema is checked against the descriptor from WsaClient.exe (bin/proto-from-wsaclient.py). Analysis —
-// docs/wsa-shell-protocol.md, section "The UIABridge channel".
+// docs/protocol.md, section "UIABridge".
 syntax = "proto2";
 
 // Own package: other channels have Result and MessageType too. The package name does not go on the wire.

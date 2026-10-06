@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 23:36:41 +0000
-Subject: [PATCH] WSA: Android 15 changes (docs/patches/a15 + a16/0016, a16/0017), 2026-10-01
+Subject: [PATCH] WSA: Android 15 changes (docs/patches.md, a15 + a16/0016, a16/0017), 2026-10-01
 
 Change-Id: I88e61c7b9b374838ab9f7e8351e219f85510e960
 ---
@@ -34,7 +34,7 @@ index 7f41cea..a0e6884 100644
 +// blk_device literally and passed it to mount() as is. Neither
 +// androidboot.partition_map= nor androidboot.boot_devices= are passed on real WSA
 +// (checked 2026-09-15 via ro.boot.* on a live device,
-+// see docs/findings.md "continuation 28") - we resolve the address ourselves via sysfs,
++// see docs/patches.md, fix 0010) - we resolve the address ourselves via sysfs,
 +// with no dependency on the cmdline. Single point: both init (first and second
 +// stage) and vold link against this same libfs_mgr, so the patch in __mount() covers
 +// both at once.
@@ -99,8 +99,8 @@ index 7f41cea..a0e6884 100644
 +        // (fs_mgr_mount_all, handles late mount points such as
 +        // /data) was missed in the first fix, which made /data get skipped
 +        // entirely ("Skipping ... during mount_all") after an honest 20s
-+        // wait for a nonexistent literal path. See docs/findings.md
-+        // "continuation 28".
++        // wait for a nonexistent literal path. See docs/patches.md,
++        // fix 0010.
 +        std::string wsa_mount_all_wait_target = current_entry.blk_device;
 +        if (android::base::StartsWith(wsa_mount_all_wait_target, "SCSI=")) {
 +            auto resolved = ResolveWsaScsiBlockDevice(
@@ -120,7 +120,7 @@ index 7f41cea..a0e6884 100644
 -    if (entry.fs_mgr_flags.wait && !WaitForFile(entry.blk_device, 20s)) {
 +    // WSA: WaitForFile() polls entry.blk_device as an ordinary path -
 +    // for SCSI=H:C:T:L addresses (Microsoft's native scheme, see
-+    // docs/findings.md "continuation 28") it will never become a real
++    // docs/patches.md, fix 0010) it will never become a real
 +    // file without resolving, and the whole fix relies on a fixed 20s
 +    // of useless waiting per partition. By this point
 +    // BlockDevInitializer has already found the device via uevent - resolve it the
@@ -159,7 +159,7 @@ index a686d05..0b9a6ea 100644
 +// with no counterpart in open AOSP: fs_mgr takes blk_device literally, and
 +// neither androidboot.partition_map= nor androidboot.boot_devices= are passed on real
 +// WSA (checked 2026-09-15 via ro.boot.* on a live
-+// device, see docs/findings.md "continuation 28"). Extract H:C:T:L
++// device, see docs/patches.md, fix 0010). Extract H:C:T:L
 +// straight from the uevent sysfs path (".../host0/target0:0:0/0:0:0:1/block/sdX"),
 +// with no dependency on the cmdline.
 +static std::string GetUeventScsiName(const std::string& path) {

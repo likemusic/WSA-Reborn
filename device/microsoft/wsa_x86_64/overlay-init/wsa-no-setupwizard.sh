@@ -25,5 +25,5 @@ if [ "$(getprop ro.build.version.sdk)" -ge 37 ] 2>/dev/null; then
     log -t wsa_no_setupwizard "launcher3-disable-exit=$? out=[$OUT]"
 fi
 # Settings (provisioned, and keeping the screen on: otherwise the guest reports displayRequired=false to the host and Windows
-# stops creating windows — docs/findings.md, 11.09.2026) are set by the settings entry point above, as uid shell.
+# stops creating windows — found 11.09.2026) are set by the settings entry point above, as uid shell.
 log -t wsa_no_setupwizard "done"

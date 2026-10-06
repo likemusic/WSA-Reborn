@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start WSA and take one status line after boot — for serial runs (WSA build variants,
-# docs/wsa-variants.md). The subsystem may be stopped or running — the script starts it itself via wsa://.
+# docs/variants.md). The subsystem may be stopped or running — the script starts it itself via wsa://.
 #
 #   bin/wsa-boot-probe.sh [<label>]     — prints "label | field=value …", exit code 0 if boot_completed
 #

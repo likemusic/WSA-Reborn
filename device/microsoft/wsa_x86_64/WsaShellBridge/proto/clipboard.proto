@@ -5,7 +5,7 @@
 // (Common.SharedMemory). At Microsoft the handler lives in UserApp.apk (ClipboardRedirectionHandler +
 // util.ClipboardContentHelper), which was never transplanted; here the protocol is recovered the same way as
 // shell.proto — from protobuf-javalite RawMessageInfo. Analysis and exchange order —
-// docs/wsa-shell-protocol.md, the "Clipboard" channel section.
+// docs/protocol.md, the "Clipboard" channel section.
 syntax = "proto2";
 
 // Own package (not the shared wsa.rcm): the "Intents" channel has its own Result with the same fields,

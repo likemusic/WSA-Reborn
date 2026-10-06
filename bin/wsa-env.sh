@@ -54,7 +54,7 @@ WSA_REF="${WSA_REF:-$WSA_WORK/backup-full}"
 WSA_KEYS="${WSA_KEYS:-$WSA_WORK/keys}"
 WSA_STORAGE="${WSA_STORAGE:-$WSA_WORK/storage}"
 WSA_POOLS="${WSA_POOLS:-$WSA_STORAGE/wsa-data-pools}"
-# Other WSA installs (WSABuilds variants) next to the main one, each in its own folder (docs/wsa-variants.md).
+# Other WSA installs (WSABuilds variants) next to the main one, each in its own folder (docs/variants.md).
 WSA_VARIANTS_DIR="${WSA_VARIANTS_DIR:-${WSA_INSTALL_DIR:+$(dirname "$WSA_INSTALL_DIR")/WSA-variants}}"
 
 if [ -z "${ADB:-}" ]; then

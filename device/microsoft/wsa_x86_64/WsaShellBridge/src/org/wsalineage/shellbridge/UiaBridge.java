@@ -19,7 +19,7 @@
  *   * an action on an element that no longer exists answers with a refusal; the reference crashed on null;
  *   * DirtyBit at most once per DIRTY_MS; the reference sent it on every event, and the host
  *     re-fetched the whole tree each time.
- * Analysis: docs/wsa-shell-protocol.md, section on the UIABridge channel.
+ * Analysis: docs/protocol.md, section "UIABridge".
  */
 package org.wsalineage.shellbridge;
 

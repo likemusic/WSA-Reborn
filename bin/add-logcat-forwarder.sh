@@ -178,7 +178,7 @@ else
 ; logcat channel to the host: permissions of the logcat_forwarder domain. Verbatim copy of
 ; /product/etc/selinux/product_sepolicy.cil from the 2407.40000.4.0 reference — the types themselves are declared in
 ; plat_pub_versioned.cil on vendor, versioned attributes are linked in wsa_vendor_compat.cil.
-; See bin/add-logcat-forwarder.sh and docs/microsoft-components-checklist.md.
+; See bin/add-logcat-forwarder.sh and docs/architecture.md.
 (allow init logcat_forwarder_exec (file (read getattr map execute open)))
 (allow init logcat_forwarder (process (transition)))
 (allow logcat_forwarder logcat_forwarder_exec (file (read getattr map execute open entrypoint)))

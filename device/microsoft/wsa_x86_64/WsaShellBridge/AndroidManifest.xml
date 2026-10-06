@@ -2,7 +2,7 @@
 <!--
   WsaShellBridge — the "Android tasks <-> Windows windows" bridge over the RCM channel "Shell".
   Runs as uid system (SELinux domain system_app): the untouched WSA vendor sepolicy already grants it
-  everything needed for hal_rcm_service and the rcmsvc vsock sockets (see docs/wsa-shell-protocol.md),
+  everything needed for hal_rcm_service and the rcmsvc vsock sockets (see docs/protocol.md),
   and platform signature permissions (MANAGE_ACTIVITY_TASKS etc.) are granted automatically.
   persistent — ActivityManager starts the process at boot, no broadcast receivers needed.
 -->

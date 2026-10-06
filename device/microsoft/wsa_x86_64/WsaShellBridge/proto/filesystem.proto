@@ -18,7 +18,7 @@
 // these are Microsoft's genuine field numbers and enum values. Names are adapted to our style
 // (camelCase); names do not go on the wire. Guest reference — FileSystemRedirectionHandler,
 // FileTransferInstance and WindowsContentProvider from UserApp.apk; analysis and differences of our implementation —
-// docs/wsa-shell-protocol.md, section "The "FileSystem" channel".
+// docs/protocol.md, section "FileSystem".
 syntax = "proto2";
 
 package wsa.rcm.filesystem;

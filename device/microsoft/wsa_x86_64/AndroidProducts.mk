@@ -1,5 +1,5 @@
 # This tree must parse BOTH in the LineageOS tree AND in the vanilla AOSP tree (22.09.2026:
-# for the sake of a vanilla "core" others can build their forks on — see docs/plan-20260921.md §4).
+# for the sake of a vanilla "core" others can build their forks on).
 # So everything that depends on vendor/lineage is included only when it is present.
 PRODUCT_MAKEFILES := $(LOCAL_DIR)/aosp_wsa_x86_64.mk
 ifneq ($(wildcard vendor/lineage/config/common.mk),)

@@ -20,7 +20,7 @@ index 9858af9a8..4599ca225 100644
 +     * WSA: restored the method removed in Android 17. Microsoft's SystemApp (targetSdk 33) calls it
 +     * from KeyboardSetup.setKeyboardLayout during initialization; without it - NoSuchMethodError,
 +     * SystemApp crash loop and the network is never configured. Body is as in Android 16.
-+     * docs/patches/a17/0019, 02.10.2026.
++     * docs/patches.md, a17/0019, 02.10.2026.
 +     *
 +     * @hide
 +     */

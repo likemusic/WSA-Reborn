@@ -73,8 +73,8 @@ USERDATA="${USERDATA_IMG:-$T/qemu-userdata.img}"
 METADATA="${METADATA_IMG:-$T/qemu-metadata.img}"
 
 # IMPORTANT: by default NOT the stock Tools/initrd.img. In our install it is patched
-# with the chain lspinit → magiskinit → wsainit (WSABuilds/MagiskOnWSALocal, see
-# docs/findings.md) — lspinit expects a channel to the Windows host (hvsocket) and
+# with the chain lspinit → magiskinit → wsainit (WSABuilds/MagiskOnWSALocal)
+# — lspinit expects a channel to the Windows host (hvsocket) and
 # under bare QEMU crashes in the second second ("Attempted to kill init"), NOT
 # reaching the system.img under test at all. You need the one built by
 # bin/make-diag-initrd.sh (default $T/diag-initrd.img), which bypasses
@@ -110,7 +110,7 @@ if [ "${PARTITION_MAP:-1}" != "0" ]; then
     # sdc,SCSI=0:0:0:4 (userdata) added 15.09.2026: not needed for the first stage
     # (latemount), but needed LATER — vold/vdc (`vdc checkpoint restoreCheckpoint`)
     # opens it directly by this same name; without it, it hangs and eventually
-    # reboots itself (see docs/findings.md, "continuation 28").
+    # reboots itself.
     CMDLINE="$CMDLINE androidboot.partition_map=sdf,SCSI=0:0:0:1;sde,SCSI=0:0:0:2;sdd,SCSI=0:0:0:3;sdc,SCSI=0:0:0:4;sdb,SCSI=0:0:0:5"
     # Without this DeviceHandler::GetBlockDeviceSymlinks() does not create the
     # /dev/block/by-name/<partition_map value> symlink at all — that branch sits

@@ -17,7 +17,7 @@ Where to get WsaClient.exe: it is not in the Android image but in the WSA instal
 
 THE OUTPUT IS NOT COMMITTED TO THE REPOSITORY. It is not our reconstruction of the format but a verbatim schema from
 a Microsoft binary; our rule is BYOB — we keep our own work, and everyone extracts third-party material from their own
-install with this script (memory note wsa-github-publish-legal-constraint). Our own .proto files in
+install with this script. Our own .proto files in
 WsaShellBridge/proto/ remain written by us; the original is useful to VERIFY them.
 
 How it searches: a descriptor starts with field 1 (name) — byte 0x0a, length, "<Name>.proto". The end

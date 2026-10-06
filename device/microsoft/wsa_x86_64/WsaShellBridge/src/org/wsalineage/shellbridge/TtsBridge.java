@@ -5,7 +5,7 @@
  * come only from the guest, the host replies; audio comes back whole in a single buffer.
  *
  * In Microsoft's image the same is done by TextToSpeechRedirectionHandler and LatteTextToSpeechService from
- * UserApp.apk; this code is our own. Analysis: docs/wsa-shell-protocol.md, section on the TextToSpeech channel.
+ * UserApp.apk; this code is our own. Analysis: docs/protocol.md, section on the TextToSpeech channel.
  */
 package org.wsalineage.shellbridge;
 

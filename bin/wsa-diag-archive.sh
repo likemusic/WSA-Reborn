@@ -5,7 +5,7 @@
 #
 # The host writes into LocalState/diagnostics by itself and deletes nothing: the logcat of every subsystem start
 # (logcat channel, bin/add-logcat-forwarder.sh) and ETW traces. On 29.09.2026, five days produced
-# 4.9 GB, C: ran out, and WsaClient.exe crashed at start in ucrtbase.dll (docs/findings.md).
+# 4.9 GB, C: ran out, and WsaClient.exe crashed at start in ucrtbase.dll.
 #
 # What is moved: all logcat logs except the newest (it may be being written right now), and
 # ETW traces older than a day (fresh ones are needed by bin/wsa-guest-console.sh). A file is deleted from C: only

@@ -6,8 +6,7 @@
 ; (allow init_33_0 gskserver_exec_33_0 ...) never apply to the
 ; real init/gskserver_exec — init gets avc: denied on getattr
 ; /vendor/bin/hw/windows.services.graphics@1.0-service (likewise for
-; rcmsvc/windows.services.rcm). Found and explained 15.09.2026, see
-; docs/findings.md "continuation 28" (section "Check on a real WSA").
+; rcmsvc/windows.services.rcm). Found and explained 15.09.2026 on a real WSA.
 ;
 ; EXTENDED 18.09.2026: the list now covers the FULL contiguous block of
 ; Microsoft proprietary types in plat_pub_versioned.cil (between the stock

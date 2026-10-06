@@ -8,8 +8,8 @@
 // The schema is taken from the host WsaClient.exe (bin/proto-from-wsaclient.py, file Apps.proto) — these
 // are Microsoft's genuine field numbers and enum values. Names are adapted to our style
 // (camelCase); names do not go on the wire. Guest reference — AppsRedirectionHandler + AppCompat from
-// SystemApp.apk; analysis and differences of our implementation — docs/wsa-shell-protocol.md, section
-// "The "Apps" channel".
+// SystemApp.apk; analysis and differences of our implementation — docs/protocol.md, section
+// "Apps".
 syntax = "proto2";
 
 // Own package: a Result with the same fields exists in "Intents", "Clipboard" and "Notification".

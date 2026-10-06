@@ -4,7 +4,7 @@
 # was done by hand". Replaces the series of manual patch-system-file.sh/add-image-file.sh calls used
 # to assemble slots lineage21netfix … lineage21nostatusbar (18–21.09.2026); the list of actions was
 # obtained by comparing the working slot image with a fresh build file by file and by size
-# (docs/findings.md, 21.09.2026, "Reproducibility of system_ext").
+# (21.09.2026).
 #
 #   bin/transplant-a14.sh --img <build system_ext.img> --out <result.img> \
 #       --wsa-sysext <unpacked system_ext of the Microsoft 2407.40000.4.0 reference> \
@@ -115,7 +115,7 @@ for x in privapp-permissions-windows.xml com.microsoft.windows.pdk.notifications
     "$HERE/add-image-file.sh" "$OUT" "$WSA/etc/permissions/$x" "/etc/permissions/$x" "$SYSTEM_FILE_CTX" 0644 0:0
 done
 # TalkBack ("Screen reader for the subsystem"): since 06.10.2026 our own build from open source
-# (docs/patches/talkback/README.md): apk in /app/talkback, Braille libraries in /lib64 (not in
+# (docs/patches.md, section "TalkBack"): apk in /app/talkback, Braille libraries in /lib64 (not in
 # app/talkback/lib: a system app's ABI is not re-derived in an already used pool). Layout is made by
 # bin/talkback-prepare.sh, default $WSA_STORAGE/wsa-talkback/system (WSA_TALKBACK_DIR=). If missing,
 # fallback: the stock Microsoft apk from the reference product (WSA_TALKBACK=), as before 06.10.2026.

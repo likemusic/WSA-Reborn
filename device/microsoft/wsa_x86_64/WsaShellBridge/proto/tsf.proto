@@ -4,7 +4,7 @@
 // sends edits made by Windows: typing in the current layout, IME composition, emoji,
 // dictation (Remote*). At Microsoft the guest half is TsfRedirectionHandler and the input method
 // MicrosoftInputMethod from UserApp.apk; the schema is checked against the descriptor from WsaClient.exe
-// (bin/proto-from-wsaclient.py). Analysis — docs/wsa-shell-protocol.md, the "TSF" channel section.
+// (bin/proto-from-wsaclient.py). Analysis — docs/protocol.md, the "TSF" channel section.
 syntax = "proto2";
 
 package wsa.rcm.tsf;

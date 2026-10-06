@@ -5,7 +5,7 @@ protobuf-javalite keeps no descriptors, but each message's
 `dynamicMethod(BUILD_MESSAGE_INFO)` holds a RawMessageInfo string (field numbers, types,
 required/optional/repeated) and an object table (field names, sub-message classes, enum
 verifiers). The script reads them from .smali and prints a pseudo-.proto. This is how on 18-21.09.2026 the
-protocol of the WSA "Shell" channel was recovered (device/microsoft/wsa_x86_64/WsaShellBridge/proto/, docs/wsa-shell-protocol.md).
+protocol of the WSA "Shell" channel was recovered (device/microsoft/wsa_x86_64/WsaShellBridge/proto/, docs/protocol.md).
 
     java -cp tools/baksmali-2.5.2.jar:tools/dexlib2-2.5.2.jar:tools/guava-31.1-jre.jar:tools/jcommander-1.82.jar:tools/util-2.5.2.jar \
         org.jf.baksmali.Main disassemble classesN.dex -o smaliN

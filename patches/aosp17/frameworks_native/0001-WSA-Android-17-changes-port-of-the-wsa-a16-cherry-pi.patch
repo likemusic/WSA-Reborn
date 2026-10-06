@@ -54,7 +54,7 @@ index 35d258f..991aeb6 100644
 +    // Windows Subsystem for Android (WSA): hwcomposer.windows.so groups HWC layers into a host window
 +    // by com.microsoft.wsa.taskid and distinguishes them by com.microsoft.wsa.windowtype. We export both
 +    // keys REGARDLESS of the list the HAL declared via getLayerGenericMetadataKeys (as Microsoft's
-+    // surfaceflinger did, see docs/findings.md 2026-09-12; on A14 the list could turn out empty).
++    // surfaceflinger did, observed 2026-09-12; on A14 the list could turn out empty).
 +    static const std::pair<const char*, uint32_t> kWsaMetadataKeys[] = {
 +            {"com.microsoft.wsa.taskid", gui::METADATA_TASK_ID},
 +            {"com.microsoft.wsa.windowtype", gui::METADATA_WINDOW_TYPE},

@@ -1,13 +1,13 @@
 /*
  * "Android tasks <-> Windows windows" bridge over the RCM channel "Shell".
  *
- * Our own implementation of the protocol from docs/wsa-shell-protocol.md. Unlike the original Microsoft
+ * Our own implementation of the protocol from docs/protocol.md. Unlike the original Microsoft
  * component (WsaTaskManager inside SystemUIApp.apk, tied to ShellTaskOrganizer from WM Shell and
  * therefore not starting on Android 14), only version-stable platform entry points are used here:
  * ITaskStackListener for events, IActivityTaskManager.getTasks() for state,
  * WindowOrganizer.applyTransaction() to apply the geometry sent by the host.
  *
- * Deliberately not implemented in the first version (see docs/wsa-shell-protocol.md, "Differences"):
+ * Deliberately not implemented in the first version (see docs/protocol.md, section "Shell"):
  * the HomeApp placeholder activity, the PiP menu. Instead of IWsaSystemServer.updateDisplayBounds (their
  * WsaLaunchParamsModifier in system_server) a new freeform task is fitted to the host work area
  * right here, before CreateTopLevelWindow — see fitToHostWorkArea().

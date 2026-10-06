@@ -19,8 +19,8 @@
  * half — FileSystemRedirectionHandler and FileTransferInstance from UserApp.apk; the code here is our own.
  * Deliberate differences from the reference: replies to the host about the probe file and rescans are prepared outside the channel's
  * receive thread (the reference holds it for up to ten seconds); files with extensions executable in Windows
- * are sent without asking to open them. Analysis — docs/wsa-shell-protocol.md, section "The
- * "FileSystem" channel".
+ * are sent without asking to open them. Analysis — docs/protocol.md, section
+ * "FileSystem".
  */
 package org.wsalineage.shellbridge;
 

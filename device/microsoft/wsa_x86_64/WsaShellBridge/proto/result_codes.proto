@@ -1,6 +1,6 @@
 // Result codes in the ApiMessageHeader header. Values are signed Windows HRESULTs (int32).
 // Recovered by static analysis of SystemUIApp.apk (WSA 2407.40000.4.0), see
-// docs/wsa-shell-protocol.md. The Java package names are ours and do not affect the wire.
+// docs/protocol.md. The Java package names are ours and do not affect the wire.
 syntax = "proto2";
 
 package wsa.rcm;

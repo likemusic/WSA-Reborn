@@ -1,18 +1,18 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 23:30:41 +0000
-Subject: [PATCH] WSA: Android 16 changes (docs/patches/a16, 2026-10-01)
+Subject: [PATCH] WSA: Android 17 changes (port of the wsa-a16 cherry-pick; a16/0017 not needed - the platform removes the crop itself; 0010 fs_mgr is in system/fs/fs_mgr), 2026-10-02
 
-Change-Id: I882b9d7b7eca9df1781c41479c0998ab5769741a
+Change-Id: I0c8dcc24fc65277d4d5e86a141d9401b34f85495
 ---
  AndroidManifest.xml | 16 ++++++++++++++++
  1 file changed, 16 insertions(+)
 
 diff --git a/AndroidManifest.xml b/AndroidManifest.xml
-index e2d249ad..936dec8a 100644
+index c0cd7748..3950a701 100644
 --- a/AndroidManifest.xml
 +++ b/AndroidManifest.xml
-@@ -3276,6 +3276,22 @@
+@@ -3513,6 +3513,22 @@
                         android:value="true" />
          </activity>
  
@@ -23,7 +23,7 @@ index e2d249ad..936dec8a 100644
 +             in the class name of the activity itself, not only the fragment). Without the alias
 +             SystemApp crashes with IllegalArgumentException on EVERY attempt
 +             to sync the Developer Options state with Windows, never getting to
-+             network setup. See docs/findings.md, wsa-lineage, 2026-09-18. -->
++             network setup. Found 2026-09-18. -->
 +        <activity-alias
 +            android:name="Settings$DevelopmentSettingsDashboardActivity"
 +            android:targetActivity="Settings$DevelopmentSettingsActivity"

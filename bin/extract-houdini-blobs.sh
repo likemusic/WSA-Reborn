@@ -11,8 +11,7 @@
 # Without the directory the build goes without ARM translation, as before. This directory is not committed to git:
 # Intel/Microsoft binaries (BYOB). By default the reference is $WSA_REF.
 #
-# The layout and why it is this way — bin/add-houdini.sh (same result for already-built images)
-# and docs/findings.md, 28.09.2026.
+# The layout and why it is this way — bin/add-houdini.sh (same result for already-built images).
 set -euo pipefail
 . "$(dirname "$0")/wsa-env.sh"
 

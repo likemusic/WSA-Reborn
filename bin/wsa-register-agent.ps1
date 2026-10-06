@@ -1,5 +1,5 @@
 ﻿# Elevated agent that re-registers the WSA package — for batch runs over build variants
-# (docs/wsa-variants.md). Windows registers a package with a service (WsaService) only as administrator
+# (docs/variants.md). Windows registers a package with a service (WsaService) only as administrator
 # (Add-AppxPackage -Register -> 0x80073D28), and the WSL session does not have those rights. The owner starts the agent ONCE
 # in an elevated PowerShell window:
 #

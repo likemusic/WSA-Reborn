@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Re-register the WSA package to another install directory (a WSABuilds build variant, docs/wsa-variants.md).
+# Re-register the WSA package to another install directory (a WSABuilds build variant, docs/variants.md).
 #
 #   bin/wsa-register.sh <install directory in WSL>   — e.g. $WSA_VARIANTS_DIR/NoGApps
 #   bin/wsa-register.sh                              — return to the working install $WSA_INSTALL_DIR

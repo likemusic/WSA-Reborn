@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
 Date: Mon, 5 Oct 2026 09:39:51 +0000
-Subject: [PATCH] WSA: lineage21 changes (docs/patches/vps-tree-snapshot-20260929/lineage21), 2026-10-05
+Subject: [PATCH] WSA: lineage21 changes (docs/patches.md), 2026-10-05
 
 Change-Id: I1db703aff5e95747d121f40cd5e3622f27d9e64e
 ---
@@ -31,7 +31,7 @@ index eca49ef..4af6f6b 100644
 -Status cp_restoreCheckpoint(const std::string& blockDevice, int restore_limit) {
 +// WSA: cp_restoreCheckpoint() opens blockDevice DIRECTLY (open()), bypassing
 +// fs_mgr::__mount() - which already has the same SCSI=H:C:T:L resolver; here it
-+// is duplicated on purpose (see docs/findings.md "continuation 28").
++// is duplicated on purpose (see docs/patches.md, fix 0010).
 +static std::string ResolveWsaScsiBlockDevice(const std::string& scsi_address) {
 +    std::string block_dir = "/sys/bus/scsi/devices/" + scsi_address + "/block";
 +    std::unique_ptr<DIR, decltype(&closedir)> dir(opendir(block_dir.c_str()), closedir);
@@ -69,7 +69,7 @@ index 1d19141..2c78ffc 100644
      }
 -    if (path[0] != '/') {
 +    // WSA: block devices are addressed by the string SCSI=H:C:T:L (Microsoft's native
-+    // scheme, see docs/findings.md "continuation 28") - this is not a file
++    // scheme, see docs/patches.md, fix 0010) - this is not a file
 +    // path in the usual sense, but this is exactly what blk_device looks like in
 +    // fstab.*.windows, and vdc checkpoint passes it here as is.
 +    // It is resolved to the real /dev/block/sdX later (Checkpoint.cpp,

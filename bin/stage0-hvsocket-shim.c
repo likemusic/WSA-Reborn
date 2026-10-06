@@ -16,7 +16,7 @@
  * do not get SIGPIPE) and WSL2_PID=1, then execs /init as usual. After that
  * the real wsainit/lspinit/magiskinit run unchanged.
  *
- * Found 15.09.2026, see docs/findings.md "continuation 26".
+ * Found 15.09.2026.
  */
 #include <sys/socket.h>
 #include <unistd.h>

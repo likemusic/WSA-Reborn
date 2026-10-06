@@ -6,8 +6,7 @@
 #   bin/patch-system-file.sh <image.img> </path/inside/image> <replacement file>
 #
 #   example (surfaceflinger in LineageOS replaced with the one from the WSA reference, found
-#   12.09.2026 — see docs/findings.md, "continuation 17", and memory
-#   wsa-surfaceflinger-root-cause-20260912.md):
+#   12.09.2026):
 #     bin/patch-system-file.sh lineage-system.img /system/bin/surfaceflinger \
 #       $WSA_REF/system/system/bin/surfaceflinger
 #

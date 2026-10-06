@@ -109,7 +109,7 @@ cmd_restore() {
 }
 
 # Clean /data: the installation templates become the live files, the guest formats them itself on first boot.
-# Needed for runs on WSA build variants (docs/wsa-variants.md): every boot starts from scratch.
+# Needed for runs on WSA build variants (docs/variants.md): every boot starts from scratch.
 cmd_fresh() {
     local inst="${1:-$WSA_INSTALL_DIR}"
     for t in userdata metadata; do

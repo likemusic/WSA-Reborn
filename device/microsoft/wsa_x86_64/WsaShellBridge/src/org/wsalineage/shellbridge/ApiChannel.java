@@ -1,7 +1,7 @@
 /*
  * Transport of one named RCM channel guest ↔ WsaClient.exe.
  *
- * Implemented per the specification in docs/wsa-shell-protocol.md (reconstructed by static analysis of
+ * Implemented per the specification in docs/protocol.md (reconstructed by static analysis of
  * SystemUIApp.apk, WSA 2407.40000.4.0); the code is our own. Frame on the wire:
  *
  *   uint32 LE length | ApiMessageHeader{callId, isReply, returnCode, payload}

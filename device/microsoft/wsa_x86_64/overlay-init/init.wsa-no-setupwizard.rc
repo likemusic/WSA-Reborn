@@ -1,4 +1,4 @@
-# Bypass of LineageSetupWizard (diagnostics 18.09.2026, see docs/findings.md):
+# Bypass of LineageSetupWizard (diagnostics 18.09.2026):
 # excluding the package from the build (PRODUCT_PACKAGES := $(filter-out ...)) failed —
 # the entry is re-added at a later stage of product processing, so filter-out
 # in the top-level .mk does not work here. Instead we programmatically do the same thing
