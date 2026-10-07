@@ -92,6 +92,7 @@ Optionally describe slots and pin an `initrd` to them in `~/.config/wsa-reborn/s
 ms13-stock       initrd.img.stock  Microsoft 2407.40000.4.0, Android 13
 aosp15-vanilla   -                 AOSP 15, android15-security-release
 lineage21        -                 LineageOS 21
+lineage22        -                 LineageOS 22.2
 ```
 
 The `initrd` decides Magisk and GApps (next section). A slot without a line in `slots.conf` keeps the live `initrd`.

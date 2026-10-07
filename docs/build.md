@@ -15,6 +15,7 @@ Both can be the same machine if it is big enough. Nothing from Microsoft is in t
 | --- | --- | --- | --- |
 | Android 14 (AOSP) | `android-14.0.0_r75` | `aosp_wsa_x86_64-ap2a-userdebug` | 2024-08 |
 | Android 14 (LineageOS 21) | `lineage-21.0` | `lineage_wsa_x86_64-ap2a-userdebug` | follows LineageOS |
+| Android 15 (LineageOS 22.2) | `lineage-22.2` | `lineage_wsa_x86_64-bp1a-userdebug` | follows LineageOS |
 | Android 15 (AOSP) | `android15-security-release` | `aosp_wsa_x86_64-ap3a-userdebug` | 2024-09 (+ASB fixes) |
 | Android 16 (AOSP) | `android16-security-release` | `aosp_wsa_x86_64-bp2a-userdebug` | 2025-08 |
 | Android 17 (AOSP) | `android17-security-release` | `aosp_wsa_x86_64-cp2a-userdebug` | 2026-05 |
@@ -69,7 +70,10 @@ The `*-security-release` branches keep moving. For a reproducible tree, sync to 
 
 ```bash
 bin/fetch-sources.sh /build/lineage-21          # LOS_BRANCH defaults to lineage-21.0
+LOS_BRANCH=lineage-22.2 bin/fetch-sources.sh /build/lineage-22
 ```
+
+For LineageOS 22.2 skip the ARM translator blobs in the tree (see [patches.md](patches.md), `lineage22`) and add the translator to the built `system_ext`/`system` with `bin/add-houdini.sh --sysext … --system …`.
 
 `fetch-sources.sh` runs `check-env.sh` first (skip with `LOS_SKIP_CHECK=1`), does `repo init --depth=1 --git-lfs` (WebView prebuilts need Git LFS), retries `repo sync` up to `LOS_ATTEMPTS` times (default 5) with `LOS_JOBS` jobs (default 4), and stops the download if the disk being filled drops below `LOS_GUARD_GB` (default 25 GB) free. An interrupted run resumes when started again.
 
@@ -77,12 +81,12 @@ bin/fetch-sources.sh /build/lineage-21          # LOS_BRANCH defaults to lineage
 
 Below, `REBORN` is where you cloned this repository (`REBORN=~/WSA-Reborn`) and `TREE` is the source tree.
 
-`patches/<target>/<project>/` holds `git format-patch` series, one directory per project; the project's path in the tree is in the `.path` file inside the directory. `<target>` is `aosp14`, `aosp15`, `aosp16`, `aosp17` or `lineage21`. Apply them with:
+`patches/<target>/<project>/` holds `git format-patch` series, one directory per project; the project's path in the tree is in the `.path` file inside the directory. `<target>` is `aosp14`, `aosp15`, `aosp16`, `aosp17`, `lineage21` or `lineage22`. Apply them with:
 
 ```bash
 git config --global user.email >/dev/null || git config --global user.email "build@localhost"
 git config --global user.name  >/dev/null || git config --global user.name  "build"
-"$REBORN/bin/apply-patches.sh" aosp15 "$TREE"     # aosp14 | aosp15 | aosp16 | aosp17 | lineage21
+"$REBORN/bin/apply-patches.sh" aosp15 "$TREE"     # aosp14 | aosp15 | aosp16 | aosp17 | lineage21 | lineage22
 ```
 
 It runs `git am` in each patched project on a new branch `wsa-<target>` and stops at the first conflict.

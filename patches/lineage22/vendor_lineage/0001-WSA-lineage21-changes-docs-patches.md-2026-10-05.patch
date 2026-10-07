@@ -1,0 +1,26 @@
+From e67d1c240c670ff1e287493b84d937695aefffa5 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
+Date: Wed, 7 Oct 2026 21:54:15 +0000
+Subject: [PATCH] WSA: lineage21 changes (docs/patches.md), 2026-10-05
+
+Change-Id: I965ef1ddb43c768c4eea7d7602135e5718851404
+---
+ config/common.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/config/common.mk b/config/common.mk
+index 5265427..1bde443 100644
+--- a/config/common.mk
++++ b/config/common.mk
+@@ -96,7 +96,7 @@ PRODUCT_COPY_FILES += \
+ 
+ # Enforce privapp-permissions whitelist
+ PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
+-    ro.control_privapp_permissions=enforce
++    ro.control_privapp_permissions?=enforce
+ 
+ ifneq ($(TARGET_DISABLE_LINEAGE_SDK), true)
+ # Lineage SDK
+-- 
+2.43.0
+

@@ -1,0 +1,30 @@
+From d69f8dca6f477e909883d5d33b1561c999212194 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
+Date: Wed, 7 Oct 2026 21:54:13 +0000
+Subject: [PATCH] gsi_release: end the PRODUCT_PACKAGES list before
+ PRODUCT_COPY_FILES
+
+The missing blank line after gsi_overlay_systemui makes "PRODUCT_COPY_FILES += <file>" part of
+PRODUCT_PACKAGES, and products that enforce existing PRODUCT_PACKAGES fail with
+"includes non-existent modules"; the overlay config is never copied.
+
+Change-Id: I62a055370ddd2407ffa784465d3469cfda10fb3d
+---
+ target/product/gsi_release.mk | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/target/product/gsi_release.mk b/target/product/gsi_release.mk
+index f00c38c..5874c5c 100644
+--- a/target/product/gsi_release.mk
++++ b/target/product/gsi_release.mk
+@@ -56,6 +56,7 @@ ifneq ($(PRODUCT_IS_AUTOMOTIVE),true)
+     PRODUCT_PACKAGES += \
+         gsi_overlay_framework \
+         gsi_overlay_systemui \
++
+     PRODUCT_COPY_FILES += \
+         device/generic/common/overlays/overlay-config.xml:$(TARGET_COPY_OUT_SYSTEM_EXT)/overlay/config/config.xml
+ endif
+-- 
+2.43.0
+
