@@ -9,9 +9,10 @@
  * GeocodeProviderBase.ACTION_GEOCODE_PROVIDER the one with the higher serviceVersion metadata, and
  * Microsoft's service has none at all (Integer.MIN_VALUE).
  *
- * The GeocodeProviderBase interface is the same in Android 14 r75 — 17 (in 17 the OutcomeReceiver error type is
- * Throwable instead of Exception, after type erasure it is the same method), so one apk fits all
- * slots.
+ * The GeocodeProviderBase interface is the same in Android 14 r75 — 17, except the OutcomeReceiver error type:
+ * Exception in some releases, Throwable in others (Android 15 QPR2 / LineageOS 22.2, Android 17). After type
+ * erasure it is the same method, so one apk fits all slots; the overrides below take a raw OutcomeReceiver
+ * so that the source also compiles against either variant.
  *
  * Server. The default is the public https://nominatim.openstreetmap.org; a custom one is set with
  *   settings put global wsa_geocoder_url https://my.server
@@ -94,7 +95,8 @@ public final class OsmGeocodeService extends Service {
         }
 
         @Override
-        public void onForwardGeocode(ForwardGeocodeRequest request, OutcomeReceiver<List<Address>, Exception> receiver) {
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        public void onForwardGeocode(ForwardGeocodeRequest request, OutcomeReceiver receiver) {
             mExecutor.execute(() -> {
                 try {
                     receiver.onResult(forward(request));
@@ -106,7 +108,8 @@ public final class OsmGeocodeService extends Service {
         }
 
         @Override
-        public void onReverseGeocode(ReverseGeocodeRequest request, OutcomeReceiver<List<Address>, Exception> receiver) {
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        public void onReverseGeocode(ReverseGeocodeRequest request, OutcomeReceiver receiver) {
             mExecutor.execute(() -> {
                 try {
                     receiver.onResult(reverse(request));
