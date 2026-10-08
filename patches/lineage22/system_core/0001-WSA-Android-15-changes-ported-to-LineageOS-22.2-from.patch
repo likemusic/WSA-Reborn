@@ -1,5 +1,5 @@
 From 256a907c1149f087cc73317e7f3078f99952b214 Mon Sep 17 00:00:00 2001
-From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
 Date: Wed, 7 Oct 2026 21:54:15 +0000
 Subject: [PATCH] WSA: Android 15 changes ported to LineageOS 22.2 (from
  patches/aosp15; 0006, 0007 hand-ported A16-style)

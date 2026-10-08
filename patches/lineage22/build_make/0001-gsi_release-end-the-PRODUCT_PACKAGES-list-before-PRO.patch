@@ -1,5 +1,5 @@
 From d69f8dca6f477e909883d5d33b1561c999212194 Mon Sep 17 00:00:00 2001
-From: Valerij Ivashchenko <603401+likemusic@users.noreply.github.com>
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
 Date: Wed, 7 Oct 2026 21:54:13 +0000
 Subject: [PATCH] gsi_release: end the PRODUCT_PACKAGES list before
  PRODUCT_COPY_FILES
