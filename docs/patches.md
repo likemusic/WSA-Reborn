@@ -14,6 +14,7 @@ patches/talkback/
 | `aosp14` | AOSP, tag `android-14.0.0_r75` | `ap2a` |
 | `lineage21` | LineageOS 21 (`lineage-21.0`) | — |
 | `lineage22` | LineageOS 22.2 (`lineage-22.2`) | `bp1a` |
+| `lineage23` | LineageOS 23.2 (`lineage-23.2`), work in progress | `bp4a` |
 | `aosp15` | AOSP, branch `android15-security-release` | `ap3a` |
 | `aosp16` | AOSP, branch `android16-security-release` | `bp2a` |
 | `aosp17` | AOSP, branch `android17-security-release` | `cp2a` |
@@ -40,6 +41,7 @@ Target-specific notes:
 - **`aosp17`, manifest hole:** `external/rust/cros-libva` in the `android17-security-release` manifest imports a module type from `system/desktop/cros-codecs/Android.bp`, a project that is not in the manifest. The build fails in Soong analysis until a stub `Android.bp` declaring that `rust_defaults` module type is placed at that path (protected-content support stays disabled). This is a build-tree workaround, not a patch: the stub is in [patches/aosp17-build/](../patches/aosp17-build/), together with an optional `build/soong` tweak for machines with ~16 GB of RAM.
 - **`lineage21`** additionally patches `system/vold` and `vendor/lineage` (see [LineageOS-only changes](#lineageos-only-changes)).
 - **`lineage22`** is the `aosp15` series ported to LineageOS 22.2 (Android 15 QPR2), one commit per project; `0006`/`0007` follow the Android 16 shape, because QPR2 already has the Android 16 window-decoration code. Two calls were adapted to the QPR2 API (`WebViewUpdateServiceImpl2.getPackageInfoForProviderAllUsers` without `Context`, logging in `AppOpsManager`). `system/vold` and `vendor/lineage` are carried over from `lineage21`. `build/make` fixes a bug of LineageOS itself: `target/product/gsi_release.mk` lacks a blank line after the `PRODUCT_PACKAGES` list, so Kati reads the following `PRODUCT_COPY_FILES` as package names and fails with "includes non-existent modules". Do not put the ARM translator blobs into a LineageOS 22.2 tree: the QPR2 `fsgen` turns `lib/` copy files into modules installed to `lib64`, the 32- and 64-bit `libhoudini.so` collide and the build fails; add the translator to the built image with `bin/add-houdini.sh` instead.
+- **`lineage23`** (work in progress) is the `aosp16` series ported to LineageOS 23.2 (Android 16 QPR2) by hand, plus two build fixes: `build/make` drops the undefined `Calendar` dependency of `aosp_system_image` (LineageOS ships Etar), and `build/soong` skips `verifyGenericConfig` (a LineageOS product on top of `aosp_x86_64` builds its `system.img` from `aosp_system_image` and installs `system_ext`/`product` apps into it). The image builds but does not boot yet: Android 16 QPR2 removed `InputManager.getInstance()`, which Microsoft's `SystemApp` still calls, so it crash-loops and RescueParty reboots the system. The missing compatibility method is not in the series yet.
 
 ## Logical fixes
 

@@ -1,0 +1,28 @@
+From 9a092b2ec40826e8bd9d875703514f061e8e0b55 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Wed, 7 Oct 2026 23:16:47 +0000
+Subject: [PATCH] gsi: drop the undefined Calendar dependency of
+ aosp_system_image (LineageOS ships Etar)
+
+Change-Id: I39b9bd175cec308aa3f5df0a7bd1d05604032892
+---
+ target/product/gsi/Android.bp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/target/product/gsi/Android.bp b/target/product/gsi/Android.bp
+index 8ba9f94..c61cb2d 100644
+--- a/target/product/gsi/Android.bp
++++ b/target/product/gsi/Android.bp
+@@ -187,7 +187,8 @@ android_system_image {
+ 
+         // handheld_product
+         "AvatarPicker",
+-        "Calendar",
++        // LineageOS 23.2 ships Etar instead of AOSP Calendar and has no "Calendar" module: Soong analysis
++        // fails on this undefined dependency for every product, even though aosp_system_image is not built.
+         "Contacts",
+         "DeskClock",
+         "Gallery2",
+-- 
+2.43.0
+

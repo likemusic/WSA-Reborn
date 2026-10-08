@@ -1,0 +1,31 @@
+From 3049b7f147ab397ab4408f8a603a654dcdc9b192 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Wed, 7 Oct 2026 23:41:45 +0000
+Subject: [PATCH] filesystem: skip verifyGenericConfig for the WSA LineageOS
+ product
+
+Change-Id: I3242bab483996deddede075a9094e9975023f12b
+---
+ filesystem/filesystem.go | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/filesystem/filesystem.go b/filesystem/filesystem.go
+index 6c887a0..601baf0 100644
+--- a/filesystem/filesystem.go
++++ b/filesystem/filesystem.go
+@@ -1198,6 +1198,12 @@ func (f *filesystem) verifyGenericConfig(ctx android.ModuleContext) {
+ 	if ctx.Config().UnbundledBuild() {
+ 		return
+ 	}
++	// WSA: a LineageOS product built on top of aosp_x86_64 (PRODUCT_SOONG_DEFINED_SYSTEM_IMAGE :=
++	// aosp_system_image) puts system_ext/product apps into the system image, and this check rejects them as
++	// non-generic. It only verifies, it does not change the image, so it is skipped for this build.
++	if true {
++		return
++	}
+ 
+ 	// Verify that modules installed in the system partition use the generic configiguration. This
+ 	// also checks there are any unexpected dependencies from system modules to modules installed in
+-- 
+2.43.0
+

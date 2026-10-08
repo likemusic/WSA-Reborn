@@ -1,0 +1,81 @@
+From 4e8d27c30ec71a29690f3c5ab6116c0439aabd9d Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Wed, 30 Sep 2026 23:30:41 +0000
+Subject: [PATCH] WSA: Android 16 changes (docs/patches.md, a16, 2026-10-01)
+
+Change-Id: If45fbef01ab09bef72710acb39f8371553af365a
+---
+ .../src/android/net/NetworkCapabilities.java  | 17 ++++++---------
+ .../server/ethernet/EthernetServiceImpl.java  | 21 ++++++++++++-------
+ 2 files changed, 19 insertions(+), 19 deletions(-)
+
+diff --git a/framework/src/android/net/NetworkCapabilities.java b/framework/src/android/net/NetworkCapabilities.java
+index a4aac2f..7b6f13a 100644
+--- a/framework/src/android/net/NetworkCapabilities.java
++++ b/framework/src/android/net/NetworkCapabilities.java
+@@ -1827,17 +1827,12 @@ public final class NetworkCapabilities implements Parcelable {
+      */
+     public @NonNull NetworkCapabilities setNetworkSpecifier(
+             @NonNull NetworkSpecifier networkSpecifier) {
+-        if (networkSpecifier != null
+-                // Transport can be test, or test + a single other transport or cellular + satellite
+-                // transport. Note: cellular + satellite combination is allowed since both transport
+-                // use the same specifier, TelephonyNetworkSpecifier.
+-                && mTransportTypes != (1L << TRANSPORT_TEST)
+-                && Long.bitCount(mTransportTypes & ~(1L << TRANSPORT_TEST)) != 1
+-                && !specifierAcceptableForMultipleTransports(mTransportTypes)) {
+-            throw new IllegalStateException("Must have a single non-test transport specified to "
+-                    + "use setNetworkSpecifier");
+-        }
+-
++        // WSA: com.microsoft.windows.network.NetworkManager (SystemApp, closed
++        // source) calls setNetworkSpecifier() with a set of transports that
++        // this check rejects on this Android/Connectivity module version -
++        // apparently SystemApp was built against a different API revision. Relax
++        // the check for our build; see docs/architecture.md
++        // (the error was "Must have a single non-test transport").
+         mNetworkSpecifier = networkSpecifier;
+ 
+         return this;
+diff --git a/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java b/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java
+index 01d8660..650b4b1 100644
+--- a/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java
++++ b/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java
+@@ -72,8 +72,13 @@ public class EthernetServiceImpl extends BaseEthernetServiceImpl {
+     }
+ 
+     private void enforceAutomotiveDevice(final @NonNull String methodName) {
+-        PermissionUtils.enforceSystemFeature(mContext, PackageManager.FEATURE_AUTOMOTIVE,
+-                methodName + " is only available on automotive devices.");
++        // WSA: Microsoft's WsaClient/SystemApp calls updateConfiguration() with
++        // capabilities, expecting this check to mean nothing on a non-
++        // automotive device (WSA itself does not declare itself automotive).
++        // On Android 13/AOSP GSI the same check was removed with a byte patch of
++        // service-connectivity.jar (the "enforceAutomotiveDevice patch");
++        // here, since we have the sources, we remove it at the source level -
++        // cleaner and survives a rebuild. See docs/architecture.md.
+     }
+ 
+     @CheckResult
+@@ -302,12 +307,12 @@ public class EthernetServiceImpl extends BaseEthernetServiceImpl {
+     }
+ 
+     private void maybeValidateEthernetTransport(String iface, NetworkCapabilities nc) {
+-        if (mTracker.isValidTestInterface(iface)) {
+-            return;
+-        }
+-        if (!nc.hasSingleTransport(TRANSPORT_ETHERNET)) {
+-            throw new IllegalArgumentException("Invalid transport type for request.");
+-        }
++        // WSA: com.microsoft.windows.network.NetworkManager (SystemApp) sends
++        // NetworkCapabilities without the single TRANSPORT_ETHERNET expected
++        // by this check - the same kind of API version mismatch as
++        // enforceAutomotiveDevice/setNetworkSpecifier slightly earlier in the chain.
++        // Relax it; see docs/architecture.md.
++        return;
+     }
+ 
+     private void enforceAdminPermission(final String iface, boolean enforceAutomotive,
+-- 
+2.43.0
+
