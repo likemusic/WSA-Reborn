@@ -1,0 +1,37 @@
+From e4d673cf9b2fd3a1a04838ea31e1d4a2409e21ba Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Fri, 9 Oct 2026 20:12:26 +0000
+Subject: [PATCH 2/2] WSA: InputManager.getInstance() for Microsoft SystemApp
+ (removed in Android 16 QPR2)
+
+Change-Id: I1468f389c6a98adb4ebecc694e7df7939d89370f
+---
+ core/java/android/hardware/input/InputManager.java | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/core/java/android/hardware/input/InputManager.java b/core/java/android/hardware/input/InputManager.java
+index 155ba417a..550e0ef1e 100644
+--- a/core/java/android/hardware/input/InputManager.java
++++ b/core/java/android/hardware/input/InputManager.java
+@@ -336,6 +336,18 @@ public final class InputManager {
+         mContext = context;
+     }
+ 
++    /**
++     * WSA: Android 16 QPR2 removed this accessor, but Microsoft's SystemApp (built for API 33) still calls
++     * it from KeyboardSetup.setKeyboardLayout; as a persistent app it then crash-loops and RescueParty
++     * reboots the system. SystemApp shares the system uid, so hidden-API restrictions do not apply.
++     *
++     * @hide
++     */
++    public static InputManager getInstance() {
++        return java.util.Objects.requireNonNull(android.app.ActivityThread.currentApplication())
++                .getSystemService(InputManager.class);
++    }
++
+     /**
+      * Get the current VelocityTracker strategy.
+      * @hide
+-- 
+2.43.0
+

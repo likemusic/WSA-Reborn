@@ -16,6 +16,7 @@ Both can be the same machine if it is big enough. Nothing from Microsoft is in t
 | Android 14 (AOSP) | `android-14.0.0_r75` | `aosp_wsa_x86_64-ap2a-userdebug` | 2024-08 |
 | Android 14 (LineageOS 21) | `lineage-21.0` | `lineage_wsa_x86_64-ap2a-userdebug` | follows LineageOS |
 | Android 15 (LineageOS 22.2) | `lineage-22.2` | `lineage_wsa_x86_64-bp1a-userdebug` | follows LineageOS |
+| Android 16 (LineageOS 23.2) | `lineage-23.2` | `lineage_wsa_x86_64-bp4a-userdebug` | follows LineageOS |
 | Android 15 (AOSP) | `android15-security-release` | `aosp_wsa_x86_64-ap3a-userdebug` | 2024-09 (+ASB fixes) |
 | Android 16 (AOSP) | `android16-security-release` | `aosp_wsa_x86_64-bp2a-userdebug` | 2025-08 |
 | Android 17 (AOSP) | `android17-security-release` | `aosp_wsa_x86_64-cp2a-userdebug` | 2026-05 |
@@ -81,12 +82,12 @@ For LineageOS 22.2 skip the ARM translator blobs in the tree (see [patches.md](p
 
 Below, `REBORN` is where you cloned this repository (`REBORN=~/WSA-Reborn`) and `TREE` is the source tree.
 
-`patches/<target>/<project>/` holds `git format-patch` series, one directory per project; the project's path in the tree is in the `.path` file inside the directory. `<target>` is `aosp14`, `aosp15`, `aosp16`, `aosp17`, `lineage21` or `lineage22`. Apply them with:
+`patches/<target>/<project>/` holds `git format-patch` series, one directory per project; the project's path in the tree is in the `.path` file inside the directory. `<target>` is `aosp14`, `aosp15`, `aosp16`, `aosp17`, `lineage21`, `lineage22` or `lineage23`. Apply them with:
 
 ```bash
 git config --global user.email >/dev/null || git config --global user.email "build@localhost"
 git config --global user.name  >/dev/null || git config --global user.name  "build"
-"$REBORN/bin/apply-patches.sh" aosp15 "$TREE"     # aosp14 | aosp15 | aosp16 | aosp17 | lineage21 | lineage22
+"$REBORN/bin/apply-patches.sh" aosp15 "$TREE"     # aosp14 | aosp15 | aosp16 | aosp17 | lineage21 | lineage22 | lineage23
 ```
 
 It runs `git am` in each patched project on a new branch `wsa-<target>` and stops at the first conflict.

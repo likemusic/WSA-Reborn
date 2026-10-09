@@ -1,7 +1,7 @@
 From 0974618c0d9dc3224c1cada45734860783f892e3 Mon Sep 17 00:00:00 2001
 From: Valerij Ivashchenko <likemusicdev@gmail.com>
 Date: Wed, 7 Oct 2026 23:11:51 +0000
-Subject: [PATCH] WSA: Android 16 changes ported to LineageOS 23.2 (from
+Subject: [PATCH 1/2] WSA: Android 16 changes ported to LineageOS 23.2 (from
  patches/aosp16)
 
 Change-Id: I199e50e213bf78bd7f851b1f498b5e3dfafcbfe3
