@@ -64,6 +64,11 @@ PRODUCT_PACKAGES := $(filter-out LineageSetupWizard,$(PRODUCT_PACKAGES))
 # restarts the VM every ~2 min (05.10.2026, pool lineage21).
 PRODUCT_PRODUCT_PROPERTIES += ro.control_privapp_permissions=disable
 
+# APEXes uncompressed. LineageOS 23.2 ships compressed ones (*.capex); on a clean /data apexd decompresses them
+# during the very first boot, which takes minutes, the WSA host does not wait that long and restarts the VM once
+# (10.10.2026, slot lineage23). The image is sized dynamically, so the extra space costs nothing else.
+PRODUCT_COMPRESSED_APEX := false
+
 PRODUCT_NAME   := lineage_wsa_x86_64
 PRODUCT_DEVICE := wsa_x86_64
 PRODUCT_MODEL  := Subsystem for Android(TM)
