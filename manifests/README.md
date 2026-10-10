@@ -8,6 +8,7 @@ Exact source revisions the patch series in `patches/<target>/` were made against
 | `lineage21.xml` | `lineage21` | `lineage-21.0` (security patch level 2026-09-01) |
 | `lineage22.xml` | `lineage22` | `lineage-22.2` (security patch level 2026-09-01) |
 | `lineage23.xml` | `lineage23` | `lineage-23.2` (security patch level 2026-09-01) |
+| `lineage24.xml` | `lineage24` | `lineage-24.0` (security patch level 2026-10-01) |
 | `aosp15.xml` | `aosp15` | `android15-security-release` |
 | `aosp16.xml` | `aosp16` | `android16-security-release` |
 | `aosp17.xml` | `aosp17` | `android17-security-release` |

@@ -12,6 +12,7 @@ WSA-Reborn replaces the Android 13 guest of Windows Subsystem for Android™ (WS
 | Android 14 | LineageOS 21 (UNOFFICIAL) | 2026-09 | works, daily driver |
 | Android 15 | LineageOS 22.2 (UNOFFICIAL) | 2026-09 | boots and works; full checklist not yet run |
 | Android 16 | LineageOS 23.2 (UNOFFICIAL) | 2026-09 | boots and works; full checklist not yet run |
+| Android 17 | LineageOS 24.0 (UNOFFICIAL) | 2026-10 | boots and works; full checklist not yet run |
 | Android 15 | AOSP `android15-security-release` | 2024-09 (+ASB up to 2026-04) | works |
 | Android 16 | AOSP `android16-security-release` | 2025-08 | works |
 | Android 17 | AOSP `android17-security-release` | 2026-05 | works |

@@ -1,0 +1,31 @@
+From 43bd257a888c799dbade0b38ba2f8d20defd554e Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Fri, 2 Oct 2026 19:53:05 +0000
+Subject: [PATCH 2/3] WSA: a17/0018 - first stage does not skip fstab entries
+ with SCSI=H:C:T:L, 2026-10-02
+
+Change-Id: I8529d3b9d42cef1843f6ae60be0825468c1f881b
+---
+ init/first_stage_mount.cpp | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/init/first_stage_mount.cpp b/init/first_stage_mount.cpp
+index 8134a1e..e5606da 100644
+--- a/init/first_stage_mount.cpp
++++ b/init/first_stage_mount.cpp
+@@ -437,7 +437,11 @@ bool FirstStageMount::GetDmVerityDevices(std::set<std::string>* devices) {
+             continue;
+         }
+         // Skip partitions that don't appear to be block devices.
+-        if (!fstab_entry.blk_device.starts_with("/dev/")) {
++        // WSA: partitions in fstab.*.windows are given as SCSI=H:C:T:L addresses (Microsoft's scheme); they
++        // are found by BlockDevInitializer via uevent (patch 0010), so do not skip them.
++        // docs/patches.md, a17/0018, 02.10.2026.
++        if (!fstab_entry.blk_device.starts_with("/dev/") &&
++            !fstab_entry.blk_device.starts_with("SCSI=")) {
+             continue;
+         }
+         devices->emplace(basename(fstab_entry.blk_device.c_str()));
+-- 
+2.43.0
+

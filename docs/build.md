@@ -17,6 +17,7 @@ Both can be the same machine if it is big enough. Nothing from Microsoft is in t
 | Android 14 (LineageOS 21) | `lineage-21.0` | `lineage_wsa_x86_64-ap2a-userdebug` | follows LineageOS |
 | Android 15 (LineageOS 22.2) | `lineage-22.2` | `lineage_wsa_x86_64-bp1a-userdebug` | follows LineageOS |
 | Android 16 (LineageOS 23.2) | `lineage-23.2` | `lineage_wsa_x86_64-bp4a-userdebug` | follows LineageOS |
+| Android 17 (LineageOS 24.0) | `lineage-24.0` | `lineage_wsa_x86_64-cp2a-userdebug` | follows LineageOS |
 | Android 15 (AOSP) | `android15-security-release` | `aosp_wsa_x86_64-ap3a-userdebug` | 2024-09 (+ASB fixes) |
 | Android 16 (AOSP) | `android16-security-release` | `aosp_wsa_x86_64-bp2a-userdebug` | 2025-08 |
 | Android 17 (AOSP) | `android17-security-release` | `aosp_wsa_x86_64-cp2a-userdebug` | 2026-05 |
@@ -87,7 +88,7 @@ Below, `REBORN` is where you cloned this repository (`REBORN=~/WSA-Reborn`) and 
 ```bash
 git config --global user.email >/dev/null || git config --global user.email "build@localhost"
 git config --global user.name  >/dev/null || git config --global user.name  "build"
-"$REBORN/bin/apply-patches.sh" aosp15 "$TREE"     # aosp14 | aosp15 | aosp16 | aosp17 | lineage21 | lineage22 | lineage23
+"$REBORN/bin/apply-patches.sh" aosp15 "$TREE"     # aosp14 | aosp15 | aosp16 | aosp17 | lineage21 | lineage22 | lineage23 | lineage24
 ```
 
 It runs `git am` in each patched project on a new branch `wsa-<target>` and stops at the first conflict.

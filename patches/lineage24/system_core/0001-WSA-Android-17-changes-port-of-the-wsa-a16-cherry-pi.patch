@@ -1,0 +1,67 @@
+From 8488626684f96f55b06f6e55ef22c6307df00daa Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Wed, 30 Sep 2026 23:30:41 +0000
+Subject: [PATCH 1/3] WSA: Android 17 changes (port of the wsa-a16 cherry-pick;
+ a16/0017 not needed - the platform removes the crop itself; 0010 fs_mgr is in
+ system/fs/fs_mgr), 2026-10-02
+
+Change-Id: I2f6c8cb06331e25000f8d71a854cfc40e03038ff
+---
+ init/block_dev_initializer.cpp | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/init/block_dev_initializer.cpp b/init/block_dev_initializer.cpp
+index 70ca0e4..c2e2145 100644
+--- a/init/block_dev_initializer.cpp
++++ b/init/block_dev_initializer.cpp
+@@ -12,6 +12,7 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
++#include <algorithm>
+ #include <chrono>
+ #include <string_view>
+ #include <vector>
+@@ -123,6 +124,26 @@ bool BlockDevInitializer::InitMiscDevice(const std::string& name) {
+     return true;
+ }
+ 
++
++// WSA maps some partitions (see device/microsoft/wsa_x86_64/
++// fstab.*.windows) by the address SCSI=H:C:T:L - Microsoft's native scheme,
++// with no counterpart in open AOSP: fs_mgr takes blk_device literally, and
++// neither androidboot.partition_map= nor androidboot.boot_devices= are passed on real
++// WSA (checked 2026-09-15 via ro.boot.* on a live
++// device, see docs/patches.md, fix 0010). Extract H:C:T:L
++// straight from the uevent sysfs path (".../host0/target0:0:0/0:0:0:1/block/sdX"),
++// with no dependency on the cmdline.
++static std::string GetUeventScsiName(const std::string& path) {
++    auto block_pos = path.rfind("/block/");
++    if (block_pos == std::string::npos) return {};
++    auto scsi_end = block_pos;
++    auto scsi_start = path.rfind('/', scsi_end - 1);
++    if (scsi_start == std::string::npos) return {};
++    std::string addr = path.substr(scsi_start + 1, scsi_end - scsi_start - 1);
++    if (std::count(addr.begin(), addr.end(), ':') != 3) return {};
++    return "SCSI=" + addr;
++}
++
+ ListenerAction BlockDevInitializer::HandleUevent(const Uevent& uevent,
+                                                  std::set<std::string>* devices) {
+     // Ignore everything that is not a block device.
+@@ -145,6 +166,12 @@ ListenerAction BlockDevInitializer::HandleUevent(const Uevent& uevent,
+         if (!partition_name.empty()) {
+             iter = devices->find(partition_name);
+         }
++        if (iter == devices->end()) {
++            auto scsi_name = GetUeventScsiName(uevent.path);
++            if (!scsi_name.empty()) {
++                iter = devices->find(scsi_name);
++            }
++        }
+         if (iter == devices->end()) {
+             return ListenerAction::kContinue;
+         }
+-- 
+2.43.0
+

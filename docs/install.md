@@ -94,6 +94,7 @@ aosp15-vanilla   -                 AOSP 15, android15-security-release
 lineage21        -                 LineageOS 21
 lineage22        -                 LineageOS 22.2
 lineage23        -                 LineageOS 23.2
+lineage24        -                 LineageOS 24.0
 ```
 
 The `initrd` decides Magisk and GApps (next section). A slot without a line in `slots.conf` keeps the live `initrd`.

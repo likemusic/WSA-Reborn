@@ -15,6 +15,7 @@ patches/talkback/
 | `lineage21` | LineageOS 21 (`lineage-21.0`) | — |
 | `lineage22` | LineageOS 22.2 (`lineage-22.2`) | `bp1a` |
 | `lineage23` | LineageOS 23.2 (`lineage-23.2`) | `bp4a` |
+| `lineage24` | LineageOS 24.0 (`lineage-24.0`) | `cp2a` |
 | `aosp15` | AOSP, branch `android15-security-release` | `ap3a` |
 | `aosp16` | AOSP, branch `android16-security-release` | `bp2a` |
 | `aosp17` | AOSP, branch `android17-security-release` | `cp2a` |
@@ -42,6 +43,7 @@ Target-specific notes:
 - **`lineage21`** additionally patches `system/vold` and `vendor/lineage` (see [LineageOS-only changes](#lineageos-only-changes)).
 - **`lineage22`** is the `aosp15` series ported to LineageOS 22.2 (Android 15 QPR2), one commit per project; `0006`/`0007` follow the Android 16 shape, because QPR2 already has the Android 16 window-decoration code. Two calls were adapted to the QPR2 API (`WebViewUpdateServiceImpl2.getPackageInfoForProviderAllUsers` without `Context`, logging in `AppOpsManager`). `system/vold` and `vendor/lineage` are carried over from `lineage21`. `build/make` fixes a bug of LineageOS itself: `target/product/gsi_release.mk` lacks a blank line after the `PRODUCT_PACKAGES` list, so Kati reads the following `PRODUCT_COPY_FILES` as package names and fails with "includes non-existent modules". Do not put the ARM translator blobs into a LineageOS 22.2 tree: the QPR2 `fsgen` turns `lib/` copy files into modules installed to `lib64`, the 32- and 64-bit `libhoudini.so` collide and the build fails; add the translator to the built image with `bin/add-houdini.sh` instead.
 - **`lineage23`** is the `aosp16` series ported to LineageOS 23.2 (Android 16 QPR2) by hand, plus two build fixes: `build/make` drops the undefined `Calendar` dependency of `aosp_system_image` (LineageOS ships Etar), and `build/soong` skips `verifyGenericConfig` (a LineageOS product on top of `aosp_x86_64` builds its `system.img` from `aosp_system_image` and installs `system_ext`/`product` apps into it). `frameworks/base` `0002` restores `InputManager.getInstance()`: Android 16 QPR2 removed it, but Microsoft's `SystemApp` (API 33) still calls it at startup, crash-loops and RescueParty reboots the system. On a clean `/data` the very first boot takes longer than the host waits (`apexd` decompresses the compressed APEXes) and the host restarts the VM once; the second boot comes up normally.
+- **`lineage24`** is the `aosp17` series on LineageOS 24.0 (Android 17), plus the LineageOS-specific `system/vold` and `vendor/lineage` changes and the two `lineage23` build fixes. `build/soong` `0002` passes `GOGC`/`GOMEMLIMIT` through to `soong_build`, so the Soong analysis can be capped on a machine with little RAM (see `aosp17-build/`). `system/fs/fs_mgr` is the `aosp17` patch without the two hunks LineageOS already carries. Unlike AOSP 17, LineageOS 24.0 keeps `InputManager.getInstance()`, so the `aosp17` patch that restores it is left out — applying it would declare the method twice. With `PRODUCT_COMPRESSED_APEX := false` in the device tree the first boot on a clean `/data` comes up without a VM restart.
 
 ## Logical fixes
 

@@ -1,0 +1,28 @@
+From 7c461bb1ff574cb299fe0a55556a8c8c6be55424 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Fri, 2 Oct 2026 09:11:55 +0000
+Subject: [PATCH 2/4] WSA: 0011 for A17 -
+ DisplayAreaPolicy.Provider.instantiate takes ImeContainer instead of
+ DisplayArea.Tokens, 2026-10-02
+
+Change-Id: Id53426667e0ab04795ebbd08d66e2c28cf72349d
+---
+ .../com/android/server/wm/WsaDisplayAreaPolicyProvider.java     | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java b/services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java
+index 19ddc1462..404653b81 100644
+--- a/services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java
++++ b/services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java
+@@ -31,7 +31,7 @@ public final class WsaDisplayAreaPolicyProvider implements DisplayAreaPolicy.Pro
+ 
+     @Override
+     public DisplayAreaPolicy instantiate(WindowManagerService wmService, DisplayContent content,
+-            RootDisplayArea root, DisplayArea.Tokens imeContainer) {
++            RootDisplayArea root, ImeContainer imeContainer) {
+         return new DisplayAreaPolicy.DefaultProvider().instantiate(
+                 wmService, content, root, imeContainer);
+     }
+-- 
+2.43.0
+
