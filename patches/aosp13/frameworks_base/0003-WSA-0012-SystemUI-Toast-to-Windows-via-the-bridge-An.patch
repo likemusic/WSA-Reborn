@@ -1,0 +1,203 @@
+From 79e32ff36c9698fc9c4d134580d1e6baefb1ce0e Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Sun, 11 Oct 2026 01:14:46 +0000
+Subject: [PATCH 3/4] WSA: 0012 SystemUI - Toast to Windows via the bridge
+ (Android 13 port), 2026-10-11
+
+Change-Id: I0b1a683d9edf5ea9dd2f1d4f194a38eb40301c1c
+---
+ .../com/android/systemui/toast/ToastUI.java   |  12 ++
+ .../systemui/toast/WsaToastForwarder.java     | 137 ++++++++++++++++++
+ 2 files changed, 149 insertions(+)
+ create mode 100644 packages/SystemUI/src/com/android/systemui/toast/WsaToastForwarder.java
+
+diff --git a/packages/SystemUI/src/com/android/systemui/toast/ToastUI.java b/packages/SystemUI/src/com/android/systemui/toast/ToastUI.java
+index ed14c8ad..ebd646a6 100644
+--- a/packages/SystemUI/src/com/android/systemui/toast/ToastUI.java
++++ b/packages/SystemUI/src/com/android/systemui/toast/ToastUI.java
+@@ -64,6 +64,7 @@ public class ToastUI implements CoreStartable, CommandQueue.Callbacks {
+     private final AccessibilityManager mAccessibilityManager;
+     private final ToastFactory mToastFactory;
+     private final ToastLogger mToastLogger;
++    private final WsaToastForwarder mWsaToastForwarder;
+     @Nullable private ToastPresenter mPresenter;
+     @Nullable private ITransientNotificationCallback mCallback;
+     private ToastOutAnimatorListener mToastOutAnimatorListener;
+@@ -98,6 +99,7 @@ public class ToastUI implements CoreStartable, CommandQueue.Callbacks {
+         mToastFactory = toastFactory;
+         mAccessibilityManager = mContext.getSystemService(AccessibilityManager.class);
+         mToastLogger = toastLogger;
++        mWsaToastForwarder = new WsaToastForwarder(context);
+     }
+ 
+     @Override
+@@ -110,6 +112,12 @@ public class ToastUI implements CoreStartable, CommandQueue.Callbacks {
+     public void showToast(int uid, String packageName, IBinder token, CharSequence text,
+             IBinder windowToken, int duration, @Nullable ITransientNotificationCallback callback,
+             int displayId) {
++        // WSA: the guest screen is not visible — Windows shows the Toast, see WsaToastForwarder.
++        if (mWsaToastForwarder.isEnabled()) {
++            mToastLogger.logOnShowToast(uid, packageName, text.toString(), token.toString());
++            mWsaToastForwarder.show(packageName, token, text, duration, callback);
++            return;
++        }
+         Runnable showToastRunnable = () -> {
+             UserHandle userHandle = UserHandle.getUserHandleForUid(uid);
+             Context context = mContext.createContextAsUser(userHandle, 0);
+@@ -151,6 +159,10 @@ public class ToastUI implements CoreStartable, CommandQueue.Callbacks {
+     @Override
+     @MainThread
+     public void hideToast(String packageName, IBinder token) {
++        if (mWsaToastForwarder.isEnabled()) {
++            mWsaToastForwarder.hide(packageName, token);
++            return;
++        }
+         if (mPresenter == null || !Objects.equals(mPresenter.getPackageName(), packageName)
+                 || !Objects.equals(mPresenter.getToken(), token)) {
+             Log.w(TAG, "Attempt to hide non-current toast from package " + packageName);
+diff --git a/packages/SystemUI/src/com/android/systemui/toast/WsaToastForwarder.java b/packages/SystemUI/src/com/android/systemui/toast/WsaToastForwarder.java
+new file mode 100644
+index 000000000..13602ddec
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/toast/WsaToastForwarder.java
+@@ -0,0 +1,137 @@
++/*
++ * Copyright (C) 2026 The wsa-lineage project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.toast;
++
++import android.annotation.MainThread;
++import android.annotation.Nullable;
++import android.app.ITransientNotificationCallback;
++import android.content.Context;
++import android.content.Intent;
++import android.content.pm.ApplicationInfo;
++import android.content.pm.PackageManager;
++import android.os.IBinder;
++import android.os.RemoteException;
++import android.os.UserHandle;
++import android.util.Log;
++
++import java.util.Objects;
++
++/**
++ * Windows Subsystem for Android: pop-up messages (Toast) are shown by Windows, not by Android.
++ *
++ * The guest screen in WSA is not visible - only app windows are - so a Toast drawn here
++ * would never be seen by the user. Instead of showing it, the text is forwarded to the org.wsalineage.shellbridge bridge
++ * with an explicit broadcast, and the bridge sends it to the host as a NotificationMessage{Toast} on the
++ * "Notification" channel. The bridge receiver is protected by STATUS_BAR_SERVICE, so it accepts only
++ * from SystemUI. Microsoft's WsaToastUI in SystemUIApp.apk works the same way; this code is our own.
++ *
++ * If the bridge is not in the system, the forwarder is disabled and ToastUI draws the Toast as usual.
++ */
++final class WsaToastForwarder {
++    private static final String TAG = "WsaToastForwarder";
++
++    static final String BRIDGE_PACKAGE = "org.wsalineage.shellbridge";
++    static final String ACTION_SHOW = BRIDGE_PACKAGE + ".action.TOAST_SHOW";
++    static final String ACTION_HIDE = BRIDGE_PACKAGE + ".action.TOAST_HIDE";
++    static final String EXTRA_PACKAGE = "package";
++    static final String EXTRA_TOKEN = "token";
++    static final String EXTRA_TEXT = "text";
++    static final String EXTRA_DURATION = "duration";
++
++    private final Context mContext;
++    private Boolean mEnabled;
++
++    // The currently forwarded Toast - so hideToast can tell it from someone else's, like ToastUI does via mPresenter.
++    @Nullable private String mPackageName;
++    @Nullable private IBinder mToken;
++    @Nullable private ITransientNotificationCallback mCallback;
++
++    WsaToastForwarder(Context context) {
++        mContext = context;
++    }
++
++    /** Whether the bridge is present. Checked once: the bridge lives in the system image. */
++    boolean isEnabled() {
++        if (mEnabled == null) {
++            boolean enabled;
++            try {
++                ApplicationInfo ai = mContext.getPackageManager().getApplicationInfo(
++                        BRIDGE_PACKAGE, PackageManager.MATCH_SYSTEM_ONLY);
++                enabled = ai.enabled;
++            } catch (PackageManager.NameNotFoundException e) {
++                enabled = false;
++            }
++            mEnabled = enabled;
++            Log.i(TAG, "toasts go to Windows: " + enabled);
++        }
++        return mEnabled;
++    }
++
++    @MainThread
++    void show(String packageName, IBinder token, CharSequence text, int duration,
++            @Nullable ITransientNotificationCallback callback) {
++        if (mToken != null) {
++            hideCurrent();
++        }
++        mPackageName = packageName;
++        mToken = token;
++        mCallback = callback;
++        send(new Intent(ACTION_SHOW)
++                .putExtra(EXTRA_PACKAGE, packageName)
++                .putExtra(EXTRA_TOKEN, token.toString())
++                .putExtra(EXTRA_TEXT, text != null ? text.toString() : "")
++                .putExtra(EXTRA_DURATION, duration));
++        if (callback != null) {
++            try {
++                callback.onToastShown();
++            } catch (RemoteException e) {
++                Log.w(TAG, "onToastShown() failed for " + packageName, e);
++            }
++        }
++    }
++
++    @MainThread
++    void hide(String packageName, IBinder token) {
++        if (mToken == null || !Objects.equals(mPackageName, packageName)
++                || !Objects.equals(mToken, token)) {
++            Log.w(TAG, "Attempt to hide non-current toast from package " + packageName);
++            return;
++        }
++        hideCurrent();
++    }
++
++    private void hideCurrent() {
++        send(new Intent(ACTION_HIDE)
++                .putExtra(EXTRA_PACKAGE, mPackageName)
++                .putExtra(EXTRA_TOKEN, mToken.toString()));
++        if (mCallback != null) {
++            try {
++                mCallback.onToastHidden();
++            } catch (RemoteException e) {
++                Log.w(TAG, "onToastHidden() failed for " + mPackageName, e);
++            }
++        }
++        mPackageName = null;
++        mToken = null;
++        mCallback = null;
++    }
++
++    private void send(Intent intent) {
++        intent.setPackage(BRIDGE_PACKAGE).addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
++        mContext.sendBroadcastAsUser(intent, UserHandle.SYSTEM);
++    }
++}
+-- 
+2.43.0
+

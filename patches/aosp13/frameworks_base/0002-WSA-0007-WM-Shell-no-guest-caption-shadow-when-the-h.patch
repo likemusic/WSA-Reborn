@@ -1,0 +1,64 @@
+From dc68a47ab4a7fd245375fa75785a3a9a2d6bc64f Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Sun, 11 Oct 2026 01:14:22 +0000
+Subject: [PATCH 2/4] WSA: 0007 WM Shell - no guest caption/shadow when the
+ host draws the window frame (Android 13 port), 2026-10-11
+
+Change-Id: Ic9a88b810ed03914864b0e55d8974f1f7f0f01ba
+---
+ .../wm/shell/windowdecor/WindowDecoration.java | 18 ++++++++++++++----
+ 1 file changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration.java b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration.java
+index f8e6ecc4..086484cd 100644
+--- a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration.java
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration.java
+@@ -95,6 +95,12 @@ public abstract class WindowDecoration<T extends View & TaskFocusStateConsumer>
+     private WindowlessWindowManager mCaptionWindowManager;
+     private SurfaceControlViewHost mViewHost;
+ 
++    // WSA (Windows Subsystem for Android): the frame, title bar and shadow of a window are drawn by the
++    // Windows host (WsaClient.exe); a guest caption would add a second title bar inside the window. The
++    // flag is set by device/microsoft/wsa_x86_64 (ro.wsa.host_window_decor=true); task geometry is still
++    // applied here (docs/patches/0007, Android 13 port, 11.10.2026).
++    private static final boolean HOST_WINDOW_DECOR =
++            android.os.SystemProperties.getBoolean("ro.wsa.host_window_decor", false);
+     private final Rect mCaptionInsetsRect = new Rect();
+     private final Rect mTaskSurfaceCrop = new Rect();
+     private final float[] mTmpColor = new float[3];
+@@ -240,7 +246,7 @@ public abstract class WindowDecoration<T extends View & TaskFocusStateConsumer>
+             startT.setLayer(mTaskBackgroundSurface, TaskConstants.TASK_CHILD_LAYER_TASK_BACKGROUND);
+         }
+ 
+-        float shadowRadius = loadDimension(resources, params.mShadowRadiusId);
++        float shadowRadius = HOST_WINDOW_DECOR ? 0 : loadDimension(resources, params.mShadowRadiusId);
+         int backgroundColorInt = mTaskInfo.taskDescription.getBackgroundColor();
+         mTmpColor[0] = (float) Color.red(backgroundColorInt) / 255.f;
+         mTmpColor[1] = (float) Color.green(backgroundColorInt) / 255.f;
+@@ -268,8 +274,12 @@ public abstract class WindowDecoration<T extends View & TaskFocusStateConsumer>
+                         mCaptionContainerSurface,
+                         -outResult.mDecorContainerOffsetX + params.mCaptionX,
+                         -outResult.mDecorContainerOffsetY + params.mCaptionY)
+-                .setWindowCrop(mCaptionContainerSurface, captionWidth, captionHeight)
+-                .show(mCaptionContainerSurface);
++                .setWindowCrop(mCaptionContainerSurface, captionWidth, captionHeight);
++        if (HOST_WINDOW_DECOR) {
++            startT.hide(mCaptionContainerSurface);
++        } else {
++            startT.show(mCaptionContainerSurface);
++        }
+ 
+         if (mCaptionWindowManager == null) {
+             // Put caption under a container surface because ViewRootImpl sets the destination frame
+@@ -295,7 +305,7 @@ public abstract class WindowDecoration<T extends View & TaskFocusStateConsumer>
+             mViewHost.relayout(lp);
+         }
+ 
+-        if (ViewRootImpl.CAPTION_ON_SHELL) {
++        if (ViewRootImpl.CAPTION_ON_SHELL && !HOST_WINDOW_DECOR) {
+             outResult.mRootView.setTaskFocusState(mTaskInfo.isFocused);
+ 
+             // Caption insets
+-- 
+2.43.0
+

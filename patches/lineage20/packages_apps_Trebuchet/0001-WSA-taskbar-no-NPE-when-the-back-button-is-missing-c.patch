@@ -1,0 +1,31 @@
+From 1e484c0253d7768431ecc4c53a012bc151549da7 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Sun, 11 Oct 2026 06:30:36 +0000
+Subject: [PATCH] WSA: taskbar - no NPE when the back button is missing (crash
+ loop on WSA), 2026-10-11
+
+Change-Id: Ib61e0dfb5cf1f91dba1ff9712f1421cf2192b439
+---
+ .../launcher3/taskbar/NavbarButtonsViewController.java      | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/quickstep/src/com/android/launcher3/taskbar/NavbarButtonsViewController.java b/quickstep/src/com/android/launcher3/taskbar/NavbarButtonsViewController.java
+index a713ff5..b83b4e9 100644
+--- a/quickstep/src/com/android/launcher3/taskbar/NavbarButtonsViewController.java
++++ b/quickstep/src/com/android/launcher3/taskbar/NavbarButtonsViewController.java
+@@ -714,6 +714,12 @@ public class NavbarButtonsViewController implements TaskbarControllers.LoggableT
+      * setup wizard, or normal 3 button nav.
+      */
+     private void updateButtonLayoutSpacing() {
++        // WSA: on the Windows Subsystem for Android display the taskbar may have no back button; the NPE
++        // below crash-loops the launcher ("Quickstep keeps stopping" on the Windows desktop). Nothing to
++        // lay out without it. Android 13 Launcher3/Trebuchet, 11.10.2026.
++        if (mBackButton == null) {
++            return;
++        }
+         DeviceProfile dp = mContext.getDeviceProfile();
+         Resources res = mContext.getResources();
+         boolean isInSetup = !mContext.isUserSetupComplete();
+-- 
+2.43.0
+

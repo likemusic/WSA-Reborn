@@ -320,11 +320,14 @@ public final class UiaBridge implements ApiChannel.Handler {
 
     /** null means done, otherwise the reason for refusal. */
     private static String perform(PerformAction a) {
-        AccessibilityNodeInfo.AccessibilityAction action = switch (a.getAction()) {
-            case CLICK -> AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK;
-            case COLLAPSE -> AccessibilityNodeInfo.AccessibilityAction.ACTION_COLLAPSE;
-            case EXPAND -> AccessibilityNodeInfo.AccessibilityAction.ACTION_EXPAND;
-        };
+        // A plain switch: Android 13 builds platform apps as Java 11 (no switch expressions).
+        AccessibilityNodeInfo.AccessibilityAction action;
+        switch (a.getAction()) {
+            case CLICK: action = AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK; break;
+            case COLLAPSE: action = AccessibilityNodeInfo.AccessibilityAction.ACTION_COLLAPSE; break;
+            case EXPAND: action = AccessibilityNodeInfo.AccessibilityAction.ACTION_EXPAND; break;
+            default: return "unknown action " + a.getAction();
+        }
         AccessibilityNodeInfo root = WindowsAccessibilityService.rootInActiveWindow();
         AccessibilityNodeInfo n = root != null ? find(root, a.getNodeId()) : null;
         if (n == null) return "node " + a.getNodeId() + " not found";

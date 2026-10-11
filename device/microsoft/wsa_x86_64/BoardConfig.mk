@@ -78,3 +78,26 @@ SYSTEM_EXT_PUBLIC_SEPOLICY_DIRS  += device/lineage/sepolicy/common/public
 SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += device/lineage/sepolicy/common/private
 endif
 endif
+
+# Android 13 only: board_config.mk flattens APEXes unless the product says otherwise. The AOSP product
+# gets TARGET_FLATTEN_APEX := false from gsi_release.mk, LineageOS 20's GSI does not — the flattened
+# APEXes then land in system_ext/apex and fail the artifact path check of generic_system.mk
+# (11.10.2026). Microsoft's apexd wants real APEX files anyway. The variable is obsolete from Android 14.
+ifneq ($(PLATFORM_SDK_VERSION),)
+ifeq ($(call math_lt,$(PLATFORM_SDK_VERSION),34),true)
+TARGET_FLATTEN_APEX := false
+# LineageOS 20 still lists flattened APEX payloads under system_ext/apex in generic_system.mk's installed
+# files, and the allowed list in lineage_wsa_x86_64.mk is overwritten by require-artifacts-in-path when
+# generic_system.mk is imported later. BoardConfig is read after the products, so append here.
+PRODUCTS.build/make/target/product/generic_system.mk.ARTIFACT_PATH_ALLOWED_LIST += system_ext/%
+# Android 13 compares allowed entries with the file list literally, so a % pattern counts as redundant
+# unless the requirement is relaxed.
+PRODUCTS.build/make/target/product/generic_system.mk.ARTIFACT_PATH_REQUIREMENT_IS_RELAXED := true
+# system_ext of an Android 13 tree build is tiny (~130 MB, inodes "used + 0.2 %") — Microsoft's components
+# (bin/transplant-a14.sh) and the ARM translator (bin/add-houdini.sh, ~650 files) do not fit, and growing an
+# ext4 image adds almost no inodes. Leave room at build time (11.10.2026). The size has to be FIXED:
+# with a dynamic size build_image.py shrinks the inode count back to "used + 0.2 %" in its second pass.
+BOARD_SYSTEM_EXTIMAGE_EXTFS_INODE_COUNT := 8192
+BOARD_SYSTEM_EXTIMAGE_PARTITION_SIZE := 3221225472
+endif
+endif

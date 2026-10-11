@@ -37,8 +37,14 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/base_product.mk)
 # second ("SANITIZER_DEFAULT_VENDOR is not defined" — the variables come from
 # /apex/com.android.vndk.v33), /linkerconfig is not generated, keystore2 does not link
 # (libandroidicu.so), the guest never reaches adbd — found 22.09.2026 on the qemu-boot.sh stand.
+# On Android 13 (SDK 33) VNDK v33 is the platform's own — no snapshot, and asking for it fails
+# with "VNDK version 33 not found" (11.10.2026, aosp13-vanilla).
+ifneq ($(PLATFORM_SDK_VERSION),)
+ifeq ($(call math_gt_or_eq,$(PLATFORM_SDK_VERSION),34),true)
 PRODUCT_EXTRA_VNDK_VERSIONS := 33
 PRODUCT_PACKAGES += vndk_apex_snapshot_package
+endif
+endif
 # Same as GSI: do not wipe /data keys on metadata init — the pool is shared with LineageOS 21.
 PRODUCT_PRODUCT_PROPERTIES += ro.crypto.metadata_init_delete_all_keys.enabled=false
 
@@ -88,7 +94,14 @@ PRODUCT_PACKAGES += \
 # Launcher3* from the existence check — that is why on 22.09.2026 Launcher3QuickStep silently did not get
 # into any image there). Choose by the presence of the directory so the file works for both trees.
 ifneq ($(wildcard packages/apps/Launcher3),)
+ifeq ($(call math_lt,$(PLATFORM_SDK_VERSION),34),true)
+# Android 13: Launcher3QuickStep's taskbar crashes in NavbarButtonsViewController on WSA's large screen
+# ("Quickstep keeps stopping" ends up on the Windows desktop); the bridge is HOME anyway, and window
+# management is the host's — the plain Launcher3 is enough (11.10.2026).
+PRODUCT_PACKAGES += Launcher3
+else
 PRODUCT_PACKAGES += Launcher3QuickStep
+endif
 else
 PRODUCT_PACKAGES += TrebuchetQuickStep
 endif

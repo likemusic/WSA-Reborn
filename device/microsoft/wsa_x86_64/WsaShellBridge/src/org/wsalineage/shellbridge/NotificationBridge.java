@@ -560,10 +560,20 @@ public final class NotificationBridge implements ApiChannel.Handler {
      * leads nowhere. The reference is built for 13 and does not know about this.
      */
     private boolean fire(PendingIntent pi, Intent fillIn) {
-        Bundle options = ActivityOptions.makeBasic()
-                .setPendingIntentBackgroundActivityStartMode(
-                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
-                .toBundle();
+        Bundle options = null;
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            // Through reflection so the bridge also compiles for Android 13, where neither the method
+            // nor the restriction exists. 1 = ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED.
+            try {
+                ActivityOptions o = ActivityOptions.makeBasic();
+                ActivityOptions.class
+                        .getMethod("setPendingIntentBackgroundActivityStartMode", int.class)
+                        .invoke(o, 1);
+                options = o.toBundle();
+            } catch (ReflectiveOperationException e) {
+                Slog.w(TAG, "setPendingIntentBackgroundActivityStartMode", e);
+            }
+        }
         try {
             pi.send(mContext, 0, fillIn, null, null, null, options);
             return true;

@@ -13,6 +13,8 @@ Both can be the same machine if it is big enough. Nothing from Microsoft is in t
 
 | target | sources | lunch target | security patch level |
 | --- | --- | --- | --- |
+| Android 13 (AOSP) | `android-13.0.0_r84` | `aosp_wsa_x86_64-userdebug` | 2023-08 |
+| Android 13 (LineageOS 20) | `lineage-20.0` | `lineage_wsa_x86_64-userdebug` | follows LineageOS |
 | Android 14 (AOSP) | `android-14.0.0_r75` | `aosp_wsa_x86_64-ap2a-userdebug` | 2024-08 |
 | Android 14 (LineageOS 21) | `lineage-21.0` | `lineage_wsa_x86_64-ap2a-userdebug` | follows LineageOS |
 | Android 15 (LineageOS 22.2) | `lineage-22.2` | `lineage_wsa_x86_64-bp1a-userdebug` | follows LineageOS |
@@ -88,7 +90,7 @@ Below, `REBORN` is where you cloned this repository (`REBORN=~/WSA-Reborn`) and 
 ```bash
 git config --global user.email >/dev/null || git config --global user.email "build@localhost"
 git config --global user.name  >/dev/null || git config --global user.name  "build"
-"$REBORN/bin/apply-patches.sh" aosp15 "$TREE"     # aosp14 | aosp15 | aosp16 | aosp17 | lineage21 | lineage22 | lineage23 | lineage24
+"$REBORN/bin/apply-patches.sh" aosp15 "$TREE"     # aosp13 | aosp14 | aosp15 | aosp16 | aosp17 | lineage20 | lineage21 | lineage22 | lineage23 | lineage24
 ```
 
 It runs `git am` in each patched project on a new branch `wsa-<target>` and stops at the first conflict.
@@ -282,3 +284,7 @@ bin/build-testapp.sh testapps/ClipTest --install   # and `adb install -r` it (ru
 ```
 
 They compile with `javac` if present, otherwise with ecj (`ECJ=<jar>`, default `~/Android/tools/ecj.jar`), against `platforms/android-$API` (default 34), and are signed with a key generated on first use (`PLATFORM_KEYS=<dir>` signs with the platform key instead).
+
+### Android 13 (AOSP 13, LineageOS 20)
+
+After copying `device/microsoft/wsa_x86_64` into the tree run `bin/adapt-device-tree-sdk33.sh <tree>` — Soong of Android 13 does not know some module types and properties the device tree uses for newer versions. The prebuilt RenderScript clang of Android 13 also wants an old host: on Ubuntu 24.04 install `python-is-python3` and link `libncurses.so.5`/`libtinfo.so.5` to their `.so.6` versions. There is no release configuration in `lunch` (`aosp_wsa_x86_64-userdebug`, `lineage_wsa_x86_64-userdebug`).

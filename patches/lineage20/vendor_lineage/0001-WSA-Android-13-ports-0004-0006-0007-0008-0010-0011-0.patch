@@ -1,0 +1,27 @@
+From 5c260523355d663024e813c58c4301083cf8db8a Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Sun, 11 Oct 2026 01:15:32 +0000
+Subject: [PATCH] WSA: Android 13 ports (0004 0006 0007 0008 0010 0011 0012)
+ for LineageOS 20, 2026-10-11
+
+Change-Id: If76bb4fbc4122f7cf087b690395cb57db261eb79
+---
+ config/common.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/config/common.mk b/config/common.mk
+index 985e611..34c723e 100644
+--- a/config/common.mk
++++ b/config/common.mk
+@@ -81,7 +81,7 @@ PRODUCT_COPY_FILES += \
+ 
+ # Enforce privapp-permissions whitelist
+ PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
+-    ro.control_privapp_permissions=enforce
++    ro.control_privapp_permissions?=enforce
+ 
+ ifneq ($(TARGET_DISABLE_LINEAGE_SDK), true)
+ # Lineage SDK
+-- 
+2.43.0
+

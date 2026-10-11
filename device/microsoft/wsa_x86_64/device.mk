@@ -101,6 +101,18 @@ $(call inherit-product-if-exists, device/microsoft/wsa-houdini/houdini.mk)
 # permissions — in sepolicy/ (file_contexts, wsa_shared_folder.te), properties — in sepolicy/property_contexts.
 PRODUCT_PACKAGES += wsa_mount_shared_folder
 
+# ---- Android 13 only (SDK 33; aosp13-vanilla / lineage20, 11.10.2026) ----
+# Soong of Android 13 has no privapp_allowlist property (and no install_symlink module):
+# bin/adapt-device-tree-sdk33.sh removes them from the tree copy, and the allowlists go in here
+# under the names privapp_allowlist would give them (the module name).
+ifneq ($(PLATFORM_SDK_VERSION),)
+ifeq ($(call math_lt,$(PLATFORM_SDK_VERSION),34),true)
+PRODUCT_COPY_FILES += \
+    device/microsoft/wsa_x86_64/WsaShellBridge/privapp-permissions-wsashellbridge.xml:$(TARGET_COPY_OUT_SYSTEM_EXT)/etc/permissions/WsaShellBridge.xml \
+    device/microsoft/wsa_x86_64/WsaPackageVerifier/privapp-permissions-wsapackageverifier.xml:$(TARGET_COPY_OUT_SYSTEM_EXT)/etc/permissions/WsaPackageVerifier.xml
+endif
+endif
+
 # ---- Android 17 and newer only (SDK ≥ 37; docs/patches.md, a17/0018, a17/0021) ----
 # The platform patch a17/0021 returns the first stage of init in A17 to /system/bin/init — the device needs nothing.
 # PLATFORM_SDK_VERSION is already set by the time the product is parsed (envsetup.mk: version_util.mk before

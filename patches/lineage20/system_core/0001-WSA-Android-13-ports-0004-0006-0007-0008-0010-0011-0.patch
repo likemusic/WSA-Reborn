@@ -1,0 +1,155 @@
+From 8c471f287fe68bd944265996e1bfbf1b9fb26952 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Sun, 11 Oct 2026 01:15:28 +0000
+Subject: [PATCH] WSA: Android 13 ports (0004 0006 0007 0008 0010 0011 0012)
+ for LineageOS 20, 2026-10-11
+
+Change-Id: Ia51f417546fc6abd10fa0a0de104986a12be7e9a
+---
+ fs_mgr/fs_mgr.cpp              | 37 +++++++++++++++++++++++++++++-----
+ init/block_dev_initializer.cpp | 27 +++++++++++++++++++++++++
+ 2 files changed, 59 insertions(+), 5 deletions(-)
+
+diff --git a/fs_mgr/fs_mgr.cpp b/fs_mgr/fs_mgr.cpp
+index f1ec0bb..c1a4628 100644
+--- a/fs_mgr/fs_mgr.cpp
++++ b/fs_mgr/fs_mgr.cpp
+@@ -784,11 +784,38 @@ bool fs_mgr_is_device_unlocked() {
+     return false;
+ }
+ 
++// WSA: partitions are addressed as SCSI=H:C:T:L in Microsoft's fstab (no AOSP equivalent);
++// androidboot.partition_map/boot_devices are not passed on real WSA. Resolve the address through
++// sysfs (docs/patches/0010, ported to Android 13 on 11.10.2026).
++static std::string ResolveWsaScsiBlockDevice(const std::string& scsi_address) {
++    std::string block_dir = "/sys/bus/scsi/devices/" + scsi_address + "/block";
++    std::unique_ptr<DIR, decltype(&closedir)> dir(opendir(block_dir.c_str()), closedir);
++    if (!dir) return {};
++    struct dirent* entry;
++    while ((entry = readdir(dir.get())) != nullptr) {
++        std::string name(entry->d_name);
++        if (name == "." || name == "..") continue;
++        return "/dev/block/" + name;
++    }
++    return {};
++}
++
++static std::string WsaResolveBlkDevice(const std::string& blk_device) {
++    if (!android::base::StartsWith(blk_device, "SCSI=")) return blk_device;
++    auto resolved = ResolveWsaScsiBlockDevice(blk_device.substr(strlen("SCSI=")));
++    if (resolved.empty()) {
++        LOG(ERROR) << "WSA: failed to resolve " << blk_device << " to a real block device";
++        return blk_device;
++    }
++    return resolved;
++}
++
+ // __mount(): wrapper around the mount() system call which also
+ // sets the underlying block device to read-only if the mount is read-only.
+ // See "man 2 mount" for return values.
+ static int __mount(const std::string& source, const std::string& target, const FstabEntry& entry) {
+     errno = 0;
++    const std::string wsa_scsi_source = WsaResolveBlkDevice(source);
+     unsigned long mountflags = entry.flags;
+     int ret = 0;
+     int save_errno = 0;
+@@ -819,7 +846,7 @@ static int __mount(const std::string& source, const std::string& target, const F
+                   << ",type=" << entry.fs_type << ", gc_allowance=" << gc_allowance << "%)=" << ret
+                   << "(" << save_errno << ")";
+         }
+-        ret = mount(source.c_str(), target.c_str(), entry.fs_type.c_str(), mountflags,
++        ret = mount(wsa_scsi_source.c_str(), target.c_str(), entry.fs_type.c_str(), mountflags,
+                     opts.c_str());
+         save_errno = errno;
+         if (try_f2fs_gc_allowance) gc_allowance += 10;
+@@ -839,7 +866,7 @@ static int __mount(const std::string& source, const std::string& target, const F
+           << target_missing << ",type=" << entry.fs_type << ")=" << ret;
+ #ifndef SKIP_SET_BLK_RO
+     if ((ret == 0) && (mountflags & MS_RDONLY) != 0) {
+-        fs_mgr_set_blk_ro(source);
++        fs_mgr_set_blk_ro(wsa_scsi_source);
+     }
+ #endif
+     android::base::SetProperty("ro.boottime.init.mount." + Basename(target),
+@@ -1419,7 +1446,7 @@ MountAllResult fs_mgr_mount_all(Fstab* fstab, int mount_mode) {
+             continue;
+         }
+ 
+-        if (current_entry.fs_mgr_flags.wait && !WaitForFile(current_entry.blk_device, 20s)) {
++        if (current_entry.fs_mgr_flags.wait && !WaitForFile(WsaResolveBlkDevice(current_entry.blk_device), 20s)) {
+             LERROR << "Skipping '" << current_entry.blk_device << "' during mount_all";
+             continue;
+         }
+@@ -1804,7 +1831,7 @@ int fs_mgr_remount_userdata_into_checkpointing(Fstab* fstab) {
+ // unlike fs_mgr_do_mount which does more things with avb / verity etc.
+ int fs_mgr_do_mount_one(const FstabEntry& entry, const std::string& alt_mount_point) {
+     // First check the filesystem if requested.
+-    if (entry.fs_mgr_flags.wait && !WaitForFile(entry.blk_device, 20s)) {
++    if (entry.fs_mgr_flags.wait && !WaitForFile(WsaResolveBlkDevice(entry.blk_device), 20s)) {
+         LERROR << "Skipping mounting '" << entry.blk_device << "'";
+     }
+ 
+@@ -2086,7 +2113,7 @@ bool fs_mgr_swapon_all(const Fstab& fstab) {
+             fprintf(zram_fp.get(), "%" PRId64 "\n", entry.zram_size);
+         }
+ 
+-        if (entry.fs_mgr_flags.wait && !WaitForFile(entry.blk_device, 20s)) {
++        if (entry.fs_mgr_flags.wait && !WaitForFile(WsaResolveBlkDevice(entry.blk_device), 20s)) {
+             LERROR << "Skipping mkswap for '" << entry.blk_device << "'";
+             ret = false;
+             continue;
+diff --git a/init/block_dev_initializer.cpp b/init/block_dev_initializer.cpp
+index 05e00ed..8cb5e8f 100644
+--- a/init/block_dev_initializer.cpp
++++ b/init/block_dev_initializer.cpp
+@@ -12,6 +12,7 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
++#include <algorithm>
+ #include <chrono>
+ #include <string_view>
+ #include <vector>
+@@ -69,6 +70,26 @@ bool BlockDevInitializer::InitMiscDevice(const std::string& name) {
+     return true;
+ }
+ 
++
++// WSA maps some partitions (see device/microsoft/wsa_x86_64/
++// fstab.*.windows) by the address SCSI=H:C:T:L - Microsoft's native scheme,
++// with no counterpart in open AOSP: fs_mgr takes blk_device literally, and
++// neither androidboot.partition_map= nor androidboot.boot_devices= are passed on real
++// WSA (checked 2026-09-15 via ro.boot.* on a live
++// device, see docs/patches.md, fix 0010). Extract H:C:T:L
++// straight from the uevent sysfs path (".../host0/target0:0:0/0:0:0:1/block/sdX"),
++// with no dependency on the cmdline.
++static std::string GetUeventScsiName(const std::string& path) {
++    auto block_pos = path.rfind("/block/");
++    if (block_pos == std::string::npos) return {};
++    auto scsi_end = block_pos;
++    auto scsi_start = path.rfind('/', scsi_end - 1);
++    if (scsi_start == std::string::npos) return {};
++    std::string addr = path.substr(scsi_start + 1, scsi_end - scsi_start - 1);
++    if (std::count(addr.begin(), addr.end(), ':') != 3) return {};
++    return "SCSI=" + addr;
++}
++
+ ListenerAction BlockDevInitializer::HandleUevent(const Uevent& uevent,
+                                                  std::set<std::string>* devices) {
+     // Ignore everything that is not a block device.
+@@ -91,6 +112,12 @@ ListenerAction BlockDevInitializer::HandleUevent(const Uevent& uevent,
+         if (!partition_name.empty()) {
+             iter = devices->find(partition_name);
+         }
++        if (iter == devices->end()) {
++            auto scsi_name = GetUeventScsiName(uevent.path);
++            if (!scsi_name.empty()) {
++                iter = devices->find(scsi_name);
++            }
++        }
+         if (iter == devices->end()) {
+             return ListenerAction::kContinue;
+         }
+-- 
+2.43.0
+

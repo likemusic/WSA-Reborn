@@ -1,0 +1,105 @@
+From ea7297abeab91b408e98507875d2b71c887dbccd Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Sun, 11 Oct 2026 01:09:28 +0000
+Subject: [PATCH] WSA: 0006+0008 SurfaceFlinger - export com.microsoft.wsa.*
+ metadata unconditionally, inherit from ancestors, hide taskless status bar
+ (Android 13 legacy front end), 2026-10-11
+
+Change-Id: I0dbe0c37b7e596274d95b529a6d14e038708979e
+---
+ .../DisplayHardware/HWComposer.cpp            |  4 ++
+ services/surfaceflinger/Layer.cpp             | 55 +++++++++++++++++++
+ 2 files changed, 59 insertions(+)
+
+diff --git a/services/surfaceflinger/DisplayHardware/HWComposer.cpp b/services/surfaceflinger/DisplayHardware/HWComposer.cpp
+index a6aee1f..b9bc763 100644
+--- a/services/surfaceflinger/DisplayHardware/HWComposer.cpp
++++ b/services/surfaceflinger/DisplayHardware/HWComposer.cpp
+@@ -1018,7 +1018,11 @@ void HWComposer::loadLayerMetadataSupport() {
+ 
+     for (const auto& [name, mandatory] : supportedMetadataKeyInfo) {
+         mSupportedLayerGenericMetadata.emplace(name, mandatory);
++        // WSA: diagnostics — which generic-metadata keys hwcomposer.windows.so declared
++        ALOGI("WSA: HWC supports layer generic metadata key %s (mandatory=%d)", name.c_str(),
++              mandatory);
+     }
++    ALOGI("WSA: HWC layer generic metadata keys: %zu", mSupportedLayerGenericMetadata.size());
+ }
+ 
+ } // namespace impl
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index aff94d1..7c3398c 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -59,6 +59,7 @@
+ #include <utils/Trace.h>
+ 
+ #include <algorithm>
++#include <cstring>
+ #include <mutex>
+ #include <sstream>
+ 
+@@ -466,6 +467,60 @@ void Layer::prepareGeometryCompositionState() {
+         compositionState->metadata
+                 .emplace(key, compositionengine::GenericLayerMetadataEntry{mandatory, it->second});
+     }
++
++    // Windows Subsystem for Android (WSA), docs/patches/0006 + 0008 ported to the Android 13 legacy
++    // front end (11.10.2026). hwcomposer.windows.so groups HWC layers into host windows by
++    // com.microsoft.wsa.taskid and tells them apart by com.microsoft.wsa.windowtype. Export both keys
++    // regardless of the list the HAL declared (Microsoft's surfaceflinger did the same).
++    // WindowManagerService puts METADATA_TASK_ID only on the task surface (a container without a
++    // buffer) — buffer layers of windows do not carry it, so take a missing key from the nearest
++    // ancestor that has it.
++    static const std::pair<const char*, uint32_t> kWsaMetadataKeys[] = {
++            {"com.microsoft.wsa.taskid", METADATA_TASK_ID},
++            {"com.microsoft.wsa.windowtype", METADATA_WINDOW_TYPE},
++    };
++    for (const auto& [key, id] : kWsaMetadataKeys) {
++        if (compositionState->metadata.count(key)) continue;
++        for (sp<Layer> layer = this; layer != nullptr; layer = layer->mDrawingParent.promote()) {
++            const auto& md = layer->getDrawingState().metadata.mMap;
++            auto it = md.find(id);
++            if (it != std::end(md)) {
++                compositionState->metadata.emplace(key,
++                        compositionengine::GenericLayerMetadataEntry{false, it->second});
++                break;
++            }
++        }
++    }
++
++    // 0008: a system window layer WITHOUT a task is drawn by the host as an overlay on top of the
++    // Windows desktop when its type is in hwcomposer.windows.so's valid list. Microsoft's guest has
++    // no status bar; ours lives in SystemUI — do not hand it to the host: drop windowtype so the HAL
++    // treats the layer as invalid and keeps it in the guest framebuffer.
++    static constexpr int32_t kWsaHiddenTasklessWindowTypes[] = {
++            2000, // WindowManager.LayoutParams.TYPE_STATUS_BAR
++    };
++    if (compositionState->metadata.find("com.microsoft.wsa.taskid") ==
++        compositionState->metadata.end()) {
++        auto typeIt = compositionState->metadata.find("com.microsoft.wsa.windowtype");
++        if (typeIt != compositionState->metadata.end() &&
++            typeIt->second.value.size() >= sizeof(int32_t)) {
++            int32_t windowType = 0;
++            memcpy(&windowType, typeIt->second.value.data(), sizeof(windowType));
++            for (int32_t hidden : kWsaHiddenTasklessWindowTypes) {
++                if (windowType == hidden) {
++                    compositionState->metadata.erase(typeIt);
++                    break;
++                }
++            }
++        }
++    }
++
++    // FLAG_SECURE is not in LayerMetadata — export it by hand.
++    {
++        const uint8_t secureValue = compositionState->isSecure ? 1 : 0;
++        compositionState->metadata["com.microsoft.wsa.secure"] =
++                compositionengine::GenericLayerMetadataEntry{false, {secureValue}};
++    }
+ }
+ 
+ void Layer::preparePerFrameCompositionState() {
+-- 
+2.43.0
+

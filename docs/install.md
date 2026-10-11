@@ -91,6 +91,8 @@ Optionally describe slots and pin an `initrd` to them in `~/.config/wsa-reborn/s
 ```
 ms13-stock       initrd.img.stock  Microsoft 2407.40000.4.0, Android 13
 aosp15-vanilla   -                 AOSP 15, android15-security-release
+aosp13-vanilla   -                 AOSP 13, android-13.0.0_r84
+lineage20        -                 LineageOS 20
 lineage21        -                 LineageOS 21
 lineage22        -                 LineageOS 22.2
 lineage23        -                 LineageOS 23.2

@@ -1,0 +1,59 @@
+From 308af1992606a46d1f75e35223b402a258461296 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Sun, 11 Oct 2026 01:03:41 +0000
+Subject: [PATCH 1/4] WSA: 0011 WsaDisplayAreaPolicyProvider (Microsoft vendor
+ overlay names it), 2026-10-11
+
+Change-Id: I1aaedb3a2676e7a1c008574cbb275c480fc9f2fa
+---
+ .../wm/WsaDisplayAreaPolicyProvider.java      | 38 +++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+ create mode 100644 services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java
+
+diff --git a/services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java b/services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java
+new file mode 100644
+index 000000000..237bb429f
+--- /dev/null
++++ b/services/core/java/com/android/server/wm/WsaDisplayAreaPolicyProvider.java
+@@ -0,0 +1,38 @@
++/*
++ * Copyright (C) 2020 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.server.wm;
++
++/**
++ * vendor.img carries Microsoft's auto-generated RRO (framework-res__auto_generated_rro_vendor.apk),
++ * which sets config_deviceSpecificDisplayAreaPolicyProvider = this very class name. The real
++ * implementation exists only in Microsoft's closed services.jar, which we do not have - vendor.img is shared
++ * with other builds (used by neighbours) and must not be touched. Without this class
++ * DisplayAreaPolicy.Provider.fromResources() throws IllegalStateException right in the constructor of
++ * WindowManagerService - this is not caught (unlike config_deviceSpecificSystemServices),
++ * and system_server falls into an endless reboot loop. We delegate to the default behaviour.
++ */
++public final class WsaDisplayAreaPolicyProvider implements DisplayAreaPolicy.Provider {
++    public WsaDisplayAreaPolicyProvider() {
++    }
++
++    @Override
++    public DisplayAreaPolicy instantiate(WindowManagerService wmService, DisplayContent content,
++            RootDisplayArea root, DisplayArea.Tokens imeContainer) {
++        return new DisplayAreaPolicy.DefaultProvider().instantiate(
++                wmService, content, root, imeContainer);
++    }
++}
+-- 
+2.43.0
+

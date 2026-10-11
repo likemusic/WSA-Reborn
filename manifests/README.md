@@ -5,6 +5,8 @@ Exact source revisions the patch series in `patches/<target>/` were made against
 | file | target | upstream branch / tag |
 | --- | --- | --- |
 | `aosp14.xml` | `aosp14` | `android-14.0.0_r75` |
+| `aosp13.xml` | `aosp13` | tag `android-13.0.0_r84` |
+| `lineage20.xml` | `lineage20` | `lineage-20.0` (security patch level 2026-02-01) |
 | `lineage21.xml` | `lineage21` | `lineage-21.0` (security patch level 2026-09-01) |
 | `lineage22.xml` | `lineage22` | `lineage-22.2` (security patch level 2026-09-01) |
 | `lineage23.xml` | `lineage23` | `lineage-23.2` (security patch level 2026-09-01) |

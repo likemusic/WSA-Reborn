@@ -1,0 +1,41 @@
+From 880baf69925d734c070762f1fe2f44a60e6d7614 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Sun, 11 Oct 2026 05:39:49 +0000
+Subject: [PATCH 2/3] WSA: 0007 for Android 13 - no DecorCaptionView inside
+ freeform app windows when the host draws the frame, 2026-10-11
+
+Change-Id: I01591ec2ccfd7dbfa9c18cdd28a3517e09b052f1
+---
+ core/java/com/android/internal/policy/DecorView.java | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/core/java/com/android/internal/policy/DecorView.java b/core/java/com/android/internal/policy/DecorView.java
+index f998a690..2efa2106 100644
+--- a/core/java/com/android/internal/policy/DecorView.java
++++ b/core/java/com/android/internal/policy/DecorView.java
+@@ -2248,6 +2248,13 @@ public class DecorView extends FrameLayout implements RootViewSurfaceTaker, Wind
+     }
+ 
+     // Free floating overlapping windows require a caption.
++    // WSA (Windows Subsystem for Android): the Windows host (WsaClient.exe) draws the frame and title bar
++    // of the window; in Android 13 freeform windows also get a caption inside the app (DecorCaptionView),
++    // which would be a second title bar. Set by device/microsoft/wsa_x86_64 (ro.wsa.host_window_decor);
++    // the Android 13 counterpart of docs/patches/0007, 11.10.2026.
++    private static final boolean WSA_HOST_WINDOW_DECOR =
++            android.os.SystemProperties.getBoolean("ro.wsa.host_window_decor", false);
++
+     private DecorCaptionView createDecorCaptionView(LayoutInflater inflater) {
+         DecorCaptionView decorCaptionView = null;
+         for (int i = getChildCount() - 1; i >= 0 && decorCaptionView == null; i--) {
+@@ -2264,7 +2271,7 @@ public class DecorView extends FrameLayout implements RootViewSurfaceTaker, Wind
+         final WindowConfiguration winConfig = getResources().getConfiguration().windowConfiguration;
+         // Only a non floating application window on one of the allowed workspaces can get a caption
+         if (!mWindow.isFloating() && isApplication && winConfig.hasWindowDecorCaption()
+-                && !CAPTION_ON_SHELL) {
++                && !CAPTION_ON_SHELL && !WSA_HOST_WINDOW_DECOR) {
+             // Dependent on the brightness of the used title we either use the
+             // dark or the light button frame.
+             if (decorCaptionView == null) {
+-- 
+2.43.0
+

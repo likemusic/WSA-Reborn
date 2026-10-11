@@ -1,0 +1,32 @@
+From 0d88337f34fb2f673f751cb7cb08ab1847d99b55 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Sun, 11 Oct 2026 01:04:08 +0000
+Subject: [PATCH] WSA: 0004 Ethernet - no automotive-only check for
+ updateConfiguration (Android 13 port), 2026-10-11
+
+Change-Id: Ia38bdf7f7d69b96b0fbf6c1c9b88d298228ea9b8
+---
+ .../com/android/server/ethernet/EthernetServiceImpl.java   | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java b/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java
+index 5e830ad..d94a212 100644
+--- a/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java
++++ b/service-t/src/com/android/server/ethernet/EthernetServiceImpl.java
+@@ -66,8 +66,11 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
+     }
+ 
+     private void enforceAutomotiveDevice(final @NonNull String methodName) {
+-        PermissionUtils.enforceSystemFeature(mContext, PackageManager.FEATURE_AUTOMOTIVE,
+-                methodName + " is only available on automotive devices.");
++        // WSA: Microsoft's SystemApp calls updateConfiguration() with capabilities and expects this
++        // check to mean nothing on a non-automotive device (WSA does not declare itself automotive).
++        // On the Android 13 GSI slot the same check was removed by a bytecode patch of
++        // service-connectivity; here it is done in the source (docs/patches/0004, Android 13 port:
++        // maybeValidateEthernetTransport does not exist yet in Android 13), 11.10.2026.
+     }
+ 
+     private boolean checkUseRestrictedNetworksPermission() {
+-- 
+2.43.0
+

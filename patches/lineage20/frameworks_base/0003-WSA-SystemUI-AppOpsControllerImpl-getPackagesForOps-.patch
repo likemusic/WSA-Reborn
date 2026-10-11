@@ -1,0 +1,28 @@
+From 0f20d3a86b11a2694edf71c01ef97c160794bc2c Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Sun, 11 Oct 2026 06:49:16 +0000
+Subject: [PATCH 3/3] WSA: SystemUI AppOpsControllerImpl - getPackagesForOps()
+ may return null (crash on first boot), 2026-10-11
+
+Change-Id: I8d0897f84bd7960b08d5ba49e110466afd658629
+---
+ .../src/com/android/systemui/appops/AppOpsControllerImpl.java  | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/packages/SystemUI/src/com/android/systemui/appops/AppOpsControllerImpl.java b/packages/SystemUI/src/com/android/systemui/appops/AppOpsControllerImpl.java
+index 1876786b..38a57ad8 100644
+--- a/packages/SystemUI/src/com/android/systemui/appops/AppOpsControllerImpl.java
++++ b/packages/SystemUI/src/com/android/systemui/appops/AppOpsControllerImpl.java
+@@ -183,6 +183,9 @@ public class AppOpsControllerImpl extends BroadcastReceiver implements AppOpsCon
+ 
+     private void fetchCurrentActiveOps() {
+         List<AppOpsManager.PackageOps> packageOps = mAppOps.getPackagesForOps(OPS);
++        // WSA: getPackagesForOps() returns null when no package has these ops (a fresh /data) —
++        // the NPE crashed SystemUI on the first boot of LineageOS 20, 11.10.2026.
++        if (packageOps == null) return;
+         for (AppOpsManager.PackageOps op : packageOps) {
+             for (AppOpsManager.OpEntry entry : op.getOps()) {
+                 for (Map.Entry<String, AppOpsManager.AttributedOpEntry> attributedOpEntry :
+-- 
+2.43.0
+
