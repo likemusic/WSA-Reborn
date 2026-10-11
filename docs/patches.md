@@ -75,6 +75,8 @@ Legend: **yes** — included and needed (observed live or confirmed from the tar
 | `a17/0020` | — | superseded by `0021`, not in the series | — | — | — | — | — | — |
 | `a17/0021` | `system/core` `init/Android.bp`, `init/main.cpp` | `/system/bin/init` can run the first stage again when started without arguments | `init` aborts silently at ~2 s (`Second-stage init requires an argument`); kernel panic | no | no | no | no | yes |
 | `a15/0022` | `frameworks/base` `AudioService.java` | `null` check in `anonymizeAudioDeviceAttributesUnchecked` (backport) | `com.google.android.gms.persistent` crashes at every start (NPE) when GMS lacks `BLUETOOTH_CONNECT` | yes | yes | yes | no | no |
+| `a15/0023` | `packages/modules/Bluetooth` `BluetoothManagerService.java` | no one-time bind to read the adapter name/address at boot (Android 16 removed it) | on every first boot with a fresh `/data` Microsoft's Bluetooth HAL aborts in `initialize()` (`rootcanal::ScriptedBeacon`, `std::stoi`), twice, and `com.android.bluetooth` with it | yes | yes | yes | no | no |
+| `a17/0024` | `packages/apps/Launcher3` `TaskbarNavButtonController.java` | `mControllers != null` in `onRecentsButtonLayoutChanged` | `launcher3` crashes (NPE `cueBarController`) when the taskbar reports after `onDestroy()` — seen at boot | no | no | no | no | yes |
 
 `0001`/`0002` were early SurfaceFlinger experiments (`SurfaceFlinger.cpp` key map and `Layer.cpp` metadata) written before `0006`. They are superseded by `0006` but still present in the LineageOS `frameworks_native` patch, because they remained in that build tree; they are not part of any AOSP series.
 
@@ -147,6 +149,14 @@ The static `InputManager.getInstance()` was removed in Android 17, and `SystemAp
 ### a15/0022 — `AudioService` null check
 
 `AudioService.anonymizeAudioDeviceAttributesUnchecked` does not check for `null` on Android 14 and 15, while `getMutingExpectedDevice()` returns `null` to callers without `BLUETOOTH_CONNECT`. Google Play services call it at startup (Nearby `DiscoveryService`) and `com.google.android.gms.persistent` crashes every time. Android 16 and 17 already contain the same check; the patch backports it. It only triggers when GMS lacks `BLUETOOTH_CONNECT`, so on some `/data` images it is invisible; `pm grant com.google.android.gms android.permission.BLUETOOTH_CONNECT` is the no-rebuild workaround.
+
+### a15/0023 — Bluetooth on the first boot
+
+On a fresh `/data`, `BluetoothManagerService` does not know the adapter name and address and binds to the Bluetooth service only to read them. On Android 14 and 15 that brings the stack up, which calls `initialize()` of Microsoft's simulated Bluetooth HAL (`android.hardware.bluetooth@1.1-service.sim`), and the HAL always aborts there: its own scripted beacon passes a file path where `rootcanal::Beacon` expects an interval (`std::stoi: no conversion`). Bluetooth is off by default and cannot be used in WSA anyway (stock included), so nothing is lost; the patch only removes the two crashes per first boot, as Android 16 does. LineageOS 22.2 no longer has the branch either. Tested as a bytecode edit of the shipped module (`bin/dexpatch/BtBootNameFetchPatch.java` via `bin/apex-dexpatch.sh`); the source patch has not been built in a tree.
+
+### a17/0024 — Launcher3 taskbar after `onDestroy()`
+
+A bug of Launcher3 in Android 17: `TaskbarNavButtonController.onRecentsButtonLayoutChanged` reads `mControllers.cueBarController` after `onDestroy()` has cleared `mControllers`. The taskbar is recreated when the display changes, which WSA does at boot, so `launcher3` crashes once or twice. Tested as a bytecode edit (`bin/dexpatch/NullFieldReturnPatch.java`, path A); the source patch has not been built in a tree.
 
 ## LineageOS-only changes
 

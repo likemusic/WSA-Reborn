@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Path A in one command: a ready Google GSI (aosp_x86_64) → the three files of a WSA slot.
-# Path A for Android 15-17 (docs/build.md, "Path A: a ready Google GSI"); every step below is a fix described
+# Path A for Android 14-17 (docs/build.md, "Path A: a ready Google GSI"); every step below is a fix described
 # in docs/patches.md, applied to the files of a prebuilt image instead of a source tree.
 #
 #   bin/build-gsi-slot.sh --gsi <GSI .zip or system.img> --work <dir> --slot-dir <dir> --suffix <slot suffix> \
@@ -27,13 +27,18 @@
 #   * framework.jar: a15/0013 (KeyboardLayoutsPatch) and 0009 (LegacyOnOpNotedPatch — forwards to the API 33 method);
 #   * A15/A16: framework.jar a16/0017 (ViewRootCropPatch + helper bin/dexpatch/platform, an extra classesN.dex);
 #   * Android 17+: framework.jar a17/0019 (InputManagerGetInstancePatch — InputManager.getInstance() added back);
-#   * services.jar: a15/0014 (WebViewFallbackPatch + helper WsaWebView) and, on Android 16+, a16/0015
-#     (ReturnParamPatch on PlatformCompat.fixTargetSdk);
+#   * services.jar: a15/0014 (WebViewFallbackPatch + helper WsaWebView); on Android 15 a15/0022 (ReturnIfNullPatch on
+#     AudioService.anonymizeAudioDeviceAttributesUnchecked); on Android 16+ a16/0015 (ReturnParamPatch on
+#     PlatformCompat.fixTargetSdk);
 #   * com.android.tethering: 0004 (ReturnVoidPatch) and 0005 (NetworkSpecifierPatch), the module
 #     re-signed by bin/patch-apex-jar.sh with the open AOSP keys;
+#   * Android 15: com.android.btservices a15/0023 (BtBootNameFetchPatch, bin/apex-dexpatch.sh) — no Bluetooth HAL
+#     crash on the first boot;
 #   * Settings.apk: the 0003 activity-alias (apktool), stale oat removed;
 #   * SystemUI.apk: 0007 (WindowDecorPatch — no guest caption bar, insets and shadow inside the host window),
-#     a16/0016 (ReturnVoidPatch on ClipboardListener.onPrimaryClipChanged — no clipboard preview);
+#     a16/0016 (ReturnVoidPatch on ClipboardListener.onPrimaryClipChanged — no clipboard preview),
+#     0012 (ToastUiPatch + helper WsaToast — Toasts shown by Windows through the bridge);
+#   * Android 17+: Launcher3QuickStep.apk a17/0024 (NullFieldReturnPatch — taskbar NPE after onDestroy);
 #   * RRO WsaGsiFrameworkFix built from device/microsoft/wsa_x86_64/WsaGsiFrameworkFix;
 #   * our WsaShellBridge with its allowlist (out/WsaShellBridge.apk — bin/build-bridge-local.sh);
 #   * on Android 17, our /system/bin/init with a17/0021 (--init, same form) — the stock one has no first stage;
@@ -77,7 +82,7 @@ BT="${BT:-$(wsa_build_tools)}"
 ANDROID_JAR="${ANDROID_JAR:-$(dirname "$(dirname "$BT")")/platforms/android-34/android.jar}"
 BRIDGE_APK="$HERE/out/WsaShellBridge.apk"
 HOUDINI="${HOUDINI:-$WSA_STORAGE/wsa-houdini/gpg-26.8.237.1}"
-for f in "$VNDK_APEX" "$MKUSERIMG" "$JAVA" "$APKTOOL" "$KEYS/platform.pk8" "$KEYS/testkey.pk8" \
+for f in "$VNDK_APEX" "$MKUSERIMG" "$JAVA" "$APKTOOL" "$KEYS/platform.pk8" "$KEYS/testkey.pk8" "$KEYS/com.android.btservices.pk8" \
          "$KEYS/com.android.tethering.pem" "$ANDROID_JAR" "$HOUDINI/lib64/libhoudini.so" "$WSA_SYSEXT" "$WSA_PRODUCT" "$HOME/.android/adbkey.pub"; do
     [ -e "$f" ] || { echo "missing: $f" >&2; exit 1; }
 done
@@ -89,6 +94,7 @@ step() { echo; echo "== $* =="; }
 # Rewrites a zip with some entries replaced, keeping each entry's compression (dex/arsc stay STORED),
 # then aligns it. $1 — source, $2 — result, $3 — directory with the replacement files (same names).
 repack_zip() {
+    mkdir -p "$3"   # no patch matched on this version — the archive is rewritten as is
     python3 - "$1" "$2.unaligned" "$3" <<'PY'
 import os, sys, zipfile
 src, dst, repl = sys.argv[1:4]
@@ -165,7 +171,7 @@ esac
 S="$SPLIT/system/system"; SE="$SPLIT/system_ext"; P="$SPLIT/product"
 grep -E "^ro.build.(id|version.release|version.security_patch)=" "$S/build.prop"
 VER=$(grep -oP '^ro.build.version.release=\K[0-9]+' "$S/build.prop")
-[ "$VER" -ge 15 ] || { echo "Android $VER: this script covers GSI 15+ (A13/A14 GSI slots were built by hand)" >&2; exit 1; }
+[ "$VER" -ge 14 ] || { echo "Android $VER: this script covers GSI 14+ (the A13 GSI slot was built by hand)" >&2; exit 1; }
 
 step "VNDK v33, fstab, service_contexts, isolated compilation"
 mkdir -p "$SE/apex" && cp "$VNDK_APEX" "$SE/apex/"
@@ -189,9 +195,10 @@ sed -i 's/^ro.config.isolated_compilation_enabled=true$/ro.config.isolated_compi
 build_helpers
 step "framework.jar: a15/0013 + 0009 (+ a16/0017 on A15/A16, a17/0019 on A17+)"
 FW="$WORK/fw"; rm -rf "${FW:?}"; mkdir -p "$FW"
-dexpatch_jar "$S/framework/framework.jar" "$FW/dex" KeyboardLayoutsPatch
+# a15/0013: Android 15 made getKeyboardLayoutsForInputDevice a stub; on 14 the method is real.
+[ "$VER" -ge 15 ] && dexpatch_jar "$S/framework/framework.jar" "$FW/dex" KeyboardLayoutsPatch
 dexpatch_jar "$S/framework/framework.jar" "$FW/dex" LegacyOnOpNotedPatch
-if [ "$VER" -le 16 ]; then
+if [ "$VER" -ge 15 ] && [ "$VER" -le 16 ]; then
     # a16/0017 (A15 and A16; A17 removes the crop itself): ViewRootCropPatch redirects two calls of
     # ViewRootImpl.relayoutWindow to our helper class, which goes into framework.jar as the next classesN.dex.
     dexpatch_jar "$S/framework/framework.jar" "$FW/dex" ViewRootCropPatch
@@ -204,10 +211,16 @@ fi
 repack_zip "$S/framework/framework.jar" "$FW/framework.jar" "$FW/dex"
 cp "$FW/framework.jar" "$S/framework/framework.jar"
 
-step "services.jar: a15/0014 (WebView when the default provider is missing)$([ "$VER" -ge 16 ] && echo ', a16/0015 (uid system keeps the lowest targetSdk)')"
+step "services.jar: a15/0014 (WebView when the default provider is missing)$([ "$VER" = 15 ] && echo ', a15/0022 (AudioService null check)')$([ "$VER" -ge 16 ] && echo ', a16/0015 (uid system keeps the lowest targetSdk)')"
 SV="$WORK/svc"; rm -rf "${SV:?}"; mkdir -p "$SV"
-dexpatch_jar "$S/framework/services.jar" "$SV/dex" WebViewFallbackPatch
-add_helper "$S/framework/services.jar" "$SV/dex" WsaWebView
+if [ "$VER" -ge 15 ]; then   # a15/0014: Android 14 still takes any valid WebView provider
+    dexpatch_jar "$S/framework/services.jar" "$SV/dex" WebViewFallbackPatch
+    add_helper "$S/framework/services.jar" "$SV/dex" WsaWebView
+fi
+if [ "$VER" = 15 ]; then
+    # a15/0022 (the A14 GSI is QPR1 and has no device anonymisation in AudioService yet): Google added "ada == null ||" in Android 16; without it GMS Nearby crashes on a pool without BLUETOOTH_CONNECT.
+    dexpatch_jar "$S/framework/services.jar" "$SV/dex" ReturnIfNullPatch 'Lcom/android/server/audio/AudioService;' anonymizeAudioDeviceAttributesUnchecked 0
+fi
 if [ "$VER" -ge 16 ]; then
     dexpatch_jar "$S/framework/services.jar" "$SV/dex" ReturnParamPatch 'Lcom/android/server/compat/PlatformCompat;' fixTargetSdk 1
 fi
@@ -239,6 +252,16 @@ export APEX_PAYLOAD_KEY="$KEYS/com.android.tethering.pem" APEX_KEY="$KEYS/testke
 rm -f "$S/apex/com.android.tethering.capex" "$S/apex/com.android.tethering.apex"
 cp "$T/patched.apex" "$S/apex/com.android.tethering.apex"
 
+if [ "$VER" -le 15 ]; then
+    step "com.android.btservices: a15/0023 (no Bluetooth HAL crash on the first boot)"
+    B="$S/apex/com.android.btservices.apex"; [ -f "$B" ] || B="$S/apex/com.android.btservices.capex"
+    APEX_PAYLOAD_KEY="$KEYS/com.android.btservices.pem" APEX_KEY="$KEYS/com.android.btservices.pk8" \
+    APEX_CERT="$KEYS/com.android.btservices.x509.pem" \
+        "$HERE/bin/apex-dexpatch.sh" "$B" service-bluetooth.jar "$WORK/btservices.apex" BtBootNameFetchPatch | grep -v '^--'
+    rm -f "$S/apex/com.android.btservices.capex" "$S/apex/com.android.btservices.apex"
+    mv "$WORK/btservices.apex" "$S/apex/com.android.btservices.apex"
+fi
+
 step "Settings.apk: 0003 activity-alias"
 ST="$WORK/settings"; rm -rf "${ST:?}"; mkdir -p "$ST"
 "$JAVA" -jar "$APKTOOL" if -p "$ST/fw" "$S/framework/framework-res.apk" >/dev/null
@@ -260,17 +283,36 @@ PY
 "$BT/apksigner" sign --v4-signing-enabled false --key "$KEYS/platform.pk8" --cert "$KEYS/platform.x509.pem" --out "$SE/priv-app/Settings/Settings.apk" "$ST/aligned.apk"
 rm -rf "${SE:?}/priv-app/Settings/oat"
 
-step "SystemUI.apk: 0007 (no guest caption, insets, shadow — the host draws the frame), a16/0016"
+step "SystemUI.apk: 0007 (no guest caption, insets, shadow — the host draws the frame), a16/0016, 0012 (Toast → Windows)"
 SU="$WORK/sysui"; rm -rf "${SU:?}"; mkdir -p "$SU"
-dexpatch_jar "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/dex" WindowDecorPatch
+# 0007 has templates for A15–A17 only. The A14 GSI (QPR1) does not take our r75 (QPR3) surfaceflinger, so no
+# app windows reach Windows there anyway and the guest caption does not matter.
+[ "$VER" -ge 15 ] && dexpatch_jar "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/dex" WindowDecorPatch
 # a16/0016 (needed on A15 too): no SystemUI clipboard preview — it pops up as a separate window on the
 # Windows desktop, and copying already reaches the Windows clipboard through the bridge.
 dexpatch_jar "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/dex" ReturnVoidPatch \
     'Lcom/android/systemui/clipboardoverlay/ClipboardListener;' onPrimaryClipChanged
+# 0012: ToastUI.showToast/hideToast hand the Toast to the bridge (helper WsaToast), which shows it in Windows;
+# without the bridge in the image the helper declines and ToastUI draws it as usual.
+dexpatch_jar "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/dex" ToastUiPatch
+add_helper "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/dex" WsaToast
 repack_zip "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/aligned.apk" "$SU/dex"
 "$BT/apksigner" sign --v4-signing-enabled false --key "$KEYS/platform.pk8" --cert "$KEYS/platform.x509.pem" \
     --out "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/aligned.apk"
 rm -rf "${SE:?}/priv-app/SystemUI/oat"
+
+if [ "$VER" -ge 17 ]; then
+    # a17/0024: the taskbar reports the recents button layout after onDestroy() cleared mControllers — NPE, launcher3 crashes.
+    step "Launcher3QuickStep.apk: a17/0024 (taskbar after onDestroy)"
+    LA="$WORK/launcher"; rm -rf "${LA:?}"; mkdir -p "$LA"
+    L3="$SE/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk"
+    dexpatch_jar "$L3" "$LA/dex" NullFieldReturnPatch \
+        'Lcom/android/launcher3/taskbar/TaskbarNavButtonController;' onRecentsButtonLayoutChanged mControllers
+    repack_zip "$L3" "$LA/aligned.apk" "$LA/dex"
+    # The GSI signs Launcher3 with the AOSP testkey (not the platform key).
+    "$BT/apksigner" sign --v4-signing-enabled false --key "$KEYS/testkey.pk8" --cert "$KEYS/testkey.x509.pem" --out "$L3" "$LA/aligned.apk"
+    rm -rf "${SE:?}/priv-app/Launcher3QuickStep/oat"
+fi
 
 step "RRO WsaGsiFrameworkFix"
 R="$WORK/rro"; rm -rf "${R:?}"; mkdir -p "$R"

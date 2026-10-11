@@ -12,7 +12,8 @@
 #   avbtool.py                                                       AOSP platform/external/avb
 # Into $WSA_KEYS — the PUBLIC AOSP test keys (build/target/product/security and the module's own key); Google's
 # GSI is signed with exactly these, which is why its Settings, SystemUI and APEX can be re-signed at all:
-#   platform.pk8, platform.x509.pem, testkey.pk8, testkey.x509.pem, com.android.tethering.pem
+#   platform.pk8, platform.x509.pem, testkey.pk8, testkey.x509.pem, com.android.tethering.pem,
+#   com.android.btservices.{pem,pk8,x509.pem} (a15/0023 re-signs that module on Android 14/15)
 #
 # Not downloadable, take them from a build tree once (docs/build.md, "Path A: a ready Google GSI"):
 #   $TOOLS/hostbin/ (mkuserimg_mke2fs and what it calls), $TOOLS/jdk21 (or any JDK 17+ via JAVA/JDK).
@@ -59,6 +60,9 @@ for k in platform.pk8 platform.x509.pem testkey.pk8 testkey.x509.pem; do
 done
 fetch_aosp platform/packages/modules/Connectivity/+/refs/heads/main/Tethering/apex/com.android.tethering.pem \
     "$KEYS/com.android.tethering.pem"
+for k in com.android.btservices.pem com.android.btservices.pk8 com.android.btservices.x509.pem; do
+    fetch_aosp "platform/packages/modules/Bluetooth/+/refs/heads/main/apex/$k" "$KEYS/$k"
+done
 
 echo
 for f in "$TOOLS/hostbin/mkuserimg_mke2fs" "${JAVA:-$TOOLS/jdk21/bin/java}"; do

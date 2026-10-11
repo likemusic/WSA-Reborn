@@ -76,12 +76,18 @@ public final class OsmGeocodeService extends Service {
 
     @Override
     public void onCreate() {
-        mProvider = new Provider();
+        try {
+            mProvider = new Provider();
+        } catch (NoClassDefFoundError e) {
+            // GeocodeProviderBase is missing on old Android 14 builds (the A14 QPR1 GSI): no geocoder rather than a
+            // crash loop of the whole bridge every time the system binds to the service.
+            Slog.w(TAG, "no GeocodeProviderBase on this build, geocoder disabled: " + e);
+        }
     }
 
     @Override
     public IBinder onBind(Intent intent) {
-        return mProvider.getBinder();
+        return mProvider != null ? mProvider.getBinder() : null;
     }
 
     @Override

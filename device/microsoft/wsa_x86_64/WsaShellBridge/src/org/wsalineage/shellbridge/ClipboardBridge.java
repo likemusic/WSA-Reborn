@@ -257,7 +257,9 @@ public final class ClipboardBridge implements ApiChannel.Handler {
             return null;
         }
         byte[] bytes = new byte[size];
-        buf.position(offset);
+        // Through Buffer: ByteBuffer/MappedByteBuffer.position(int) overrides (covariant, Java 9) are missing from the
+        // ART of old Android 14 builds (A14 QPR1 GSI) — NoSuchMethodError.
+        ((java.nio.Buffer) buf).position(offset);
         buf.get(bytes);
         return bytes;
     }
@@ -378,7 +380,7 @@ public final class ClipboardBridge implements ApiChannel.Handler {
                 // Difference from the reference: we write at the declared offset. Microsoft has
                 // put(bytes, offset, size) here — the offset goes into the SOURCE array argument, and starting
                 // from the second item the wrong data lands in the section (most often an IndexOutOfBounds is thrown).
-                buf.position(cursor);
+                ((java.nio.Buffer) buf).position(cursor);
                 buf.put(bytes, 0, bytes.length);
                 data.addClipboardContent(ClipboardContentItem.newBuilder()
                         .setContentItemType(type)

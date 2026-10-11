@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Sun, 11 Oct 2026 22:00:00 +0000
+Subject: [PATCH] WSA a15/0023: BluetoothManagerService - no one-time bind to read the adapter name and address on a fresh /data (as in Android 16); Microsoft's Bluetooth HAL aborts in initialize()
+
+---
+diff --git a/service/src/com/android/server/bluetooth/BluetoothManagerService.java b/service/src/com/android/server/bluetooth/BluetoothManagerService.java
+--- a/service/src/com/android/server/bluetooth/BluetoothManagerService.java
++++ b/service/src/com/android/server/bluetooth/BluetoothManagerService.java
+@@ -1339,10 +1339,10 @@
+         if (mEnableExternal && isBluetoothPersistedStateOnBluetooth() && !isSafeMode) {
+             Log.i(TAG, "internalHandleOnBootPhase: Auto-enabling Bluetooth.");
+             sendEnableMsg(mQuietEnableExternal, ENABLE_DISABLE_REASON_SYSTEM_BOOT);
+-        } else if (!isNameAndAddressSet()) {
+-            Log.i(TAG, "internalHandleOnBootPhase: Getting adapter name and address");
+-            mHandler.sendEmptyMessage(MESSAGE_GET_NAME_AND_ADDRESS);
+         } else {
++            // WSA: no one-time bind just to read the adapter name and address on a fresh /data (as in Android 16).
++            // On 14/15 the bind brings the stack up, which calls initialize() of Microsoft's Bluetooth HAL, and the
++            // HAL aborts there (rootcanal ScriptedBeacon, std::stoi of a file path): two SIGABRT on every first boot.
+             autoOnSetupTimer();
+         }
+     }

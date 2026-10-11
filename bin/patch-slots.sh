@@ -13,10 +13,12 @@
 # would use the old code), e2fsck, raw -> vhdx, copy into the slot file. Does NOT touch the live files: afterwards run
 # bin/switch-build.sh <slot>. Wrapper for the bridge — bin/bridge-to-slots.sh.
 # GROW_MIB=<n> — first grow the image by n MiB (the slots' system_ext is tight, 06.10.2026).
+# PART=system — patch system.vhdx.<slot> instead (paths inside then start with /system/, e.g. /system/apex/…).
 set -euo pipefail
 . "$(dirname "$0")/wsa-env.sh"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 WSA_DIR=$WSA_INSTALL_DIR
+PART=${PART:-system_ext}
 WORK="${WORK:-$WSA_STORAGE/wsa-patch-slots-$(date +%Y%m%d)}"
 
 PAIRS=()
@@ -29,9 +31,9 @@ done
 mkdir -p "$WORK"
 
 for slot in "$@"; do
-    file="$WSA_DIR/system_ext.vhdx.$slot"   # slot naming of bin/switch-build.sh
+    file="$WSA_DIR/$PART.vhdx.$slot"   # slot naming of bin/switch-build.sh
     [ -w "$file" ] || { echo "$slot: no file $file" >&2; exit 1; }
-    img="$WORK/system_ext.$slot.img"
+    img="$WORK/$PART.$slot.img"
     echo "== $slot ($file)"
     qemu-img convert -f vhdx -O raw "$file" "$img"
     if [ -n "${GROW_MIB:-}" ]; then
@@ -71,7 +73,9 @@ for slot in "$@"; do
                 done ;;
         esac
     done
-    e2fsck -fy "$img" 2>&1 | tail -1
+    # -fy exits 1 when it fixed something (debugfs edits leave counters to fix) — that is fine; what must hold is -fn after it.
+    e2fsck -fy "$img" 2>&1 | tail -1 || true
+    e2fsck -fn "$img" >/dev/null 2>&1 || { echo "$slot: image not clean after e2fsck -fy" >&2; exit 1; }
     qemu-img convert -f raw -O vhdx "$img" "$img.vhdx"
     cp -f "$img.vhdx" "$file"
     rm -f "$img" "$img.vhdx"
