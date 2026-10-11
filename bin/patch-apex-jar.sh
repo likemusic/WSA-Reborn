@@ -55,6 +55,32 @@ debugfs -w -R "sif /javalib/$JAR_NAME mode 0100644" "$IMG" >/dev/null 2>&1
 printf 'u:object_r:system_file:s0\0' > "$WORK/ctx.bin"
 debugfs -w -R "ea_set -f $WORK/ctx.bin /javalib/$JAR_NAME security.selinux" "$IMG" >/dev/null 2>&1
 
+# dm-verity (11.10.2026). Android 15 apexd mounts a pre-installed APEX through dm-verity using the hashtree in
+# the payload's AVB footer — after the edit above the old tree no longer matches, and activation fails with
+# "Mounting failed ... I/O error" (on Android 13 it did not check). With APEX_PAYLOAD_KEY (the module's own
+# payload key: for AOSP modules a public test key from the module's source, e.g.
+# packages/modules/Connectivity/Tethering/apex/com.android.tethering.pem; it must match apex_pubkey) the
+# footer is rebuilt with the original parameters (size, algorithm, salt, apex.key property, no FEC).
+if [ -n "${APEX_PAYLOAD_KEY:-}" ]; then
+    AVBTOOL="${AVBTOOL:-${TOOLS:-$HOME/Android/tools}/avbtool.py}"
+    INFO=$(python3 "$AVBTOOL" info_image --image "$IMG")
+    PSIZE=$(echo "$INFO" | awk -F': *' '/^Image size:/{print $2+0; exit}')
+    ALG=$(echo "$INFO" | awk -F': *' '/^Algorithm:/{print $2; exit}')
+    HALG=$(echo "$INFO" | awk -F': *' '/Hash Algorithm:/{print $2; exit}')
+    SALT=$(echo "$INFO" | awk -F': *' '/Salt:/{print $2; exit}')
+    PROPS=$(echo "$INFO" | sed -n "s/^ *Prop: \([^ ]*\) -> '\(.*\)'/--prop \1:\2/p" | tr '\n' ' ')
+    python3 "$AVBTOOL" extract_public_key --key "$APEX_PAYLOAD_KEY" --output "$WORK/key.pub"
+    cmp -s "$WORK/key.pub" "$WORK/apex_pubkey" || { echo "APEX_PAYLOAD_KEY does not match apex_pubkey" >&2; exit 1; }
+    # The new tree may need a few more blocks than the old footer left room for: grow the
+    # payload by 1 MiB (its size is not fixed; apexd finds the footer at the end).
+    PSIZE=$(( PSIZE + 1048576 ))
+    python3 "$AVBTOOL" erase_footer --image "$IMG" || exit 1
+    python3 "$AVBTOOL" add_hashtree_footer --image "$IMG" --partition_size "$PSIZE" \
+        --key "$APEX_PAYLOAD_KEY" --algorithm "$ALG" --hash_algorithm "$HALG" --salt "$SALT" \
+        --do_not_generate_fec $PROPS || exit 1
+    echo "payload hashtree rebuilt ($ALG, $HALG, $PROPS)"
+fi
+
 python3 - "$SRC" "$WORK" "$OUT" <<'PY'
 import zipfile, os, sys
 src, work, out = sys.argv[1:4]
@@ -93,10 +119,22 @@ KEY="${APEX_KEY:-/mnt/los/keys-13/testkey.pk8}"
 CERT="${APEX_CERT:-/mnt/los/keys-13/testkey.x509.pem}"
 APKSIGNER="${APKSIGNER:-$(wsa_build_tools)/apksigner}"
 if [ -x "$APKSIGNER" ] && [ -r "$KEY" ]; then
-    "$APKSIGNER" sign --key "$KEY" --cert "$CERT" \
+    # --alignment-preserved: without it apksigner rewrites the local headers and the payload ends up at an
+    # unaligned offset (52 instead of 4096) — the loop device then cannot read even the superblock and
+    # apexd reports "Mounting failed ... I/O error" (11.10.2026, Android 15 GSI).
+    "$APKSIGNER" sign --key "$KEY" --cert "$CERT" --alignment-preserved \
         --v1-signing-enabled false --v2-signing-enabled false \
         --v3-signing-enabled true --v4-signing-enabled false "$OUT"
     echo "signed with key $(basename "$CERT")"
+    python3 - "$OUT" <<'PY2' || exit 1
+import zipfile, struct, sys
+p = sys.argv[1]; z = zipfile.ZipFile(p); f = open(p, 'rb')
+for name, align in (('apex_payload.img', 4096), ('resources.arsc', 4)):
+    i = z.getinfo(name); f.seek(i.header_offset); h = f.read(30)
+    n, e = struct.unpack('<HH', h[26:30]); off = i.header_offset + 30 + n + e
+    assert i.compress_type == 0 and off % align == 0, "after signing %s is at %d, not aligned to %d" % (name, off, align)
+print("alignment after signing: ok")
+PY2
     "$APKSIGNER" verify --print-certs "$OUT" 2>/dev/null | grep -i 'SHA-256 digest' | head -1 || true
 else
     echo "WARNING: not signed — PackageManager will not parse such a module" >&2

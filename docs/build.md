@@ -24,6 +24,8 @@ Both can be the same machine if it is big enough. Nothing from Microsoft is in t
 | Android 16 (AOSP) | `android16-security-release` | `aosp_wsa_x86_64-bp2a-userdebug` | 2025-08 |
 | Android 17 (AOSP) | `android17-security-release` | `aosp_wsa_x86_64-cp2a-userdebug` | 2026-05 |
 
+Path A — a slot from Google's prebuilt GSI without a tree build — is [below](#path-a-a-ready-google-gsi-android-1517).
+
 Steps for every target: sync sources → apply `patches/<target>/` → add `device/microsoft/wsa_x86_64` → extract the ARM translator blobs → `m systemimage systemextimage productimage` → post-process `system_ext`/`product` with components from your WSA → convert to `.vhdx`.
 
 ## Requirements
@@ -249,6 +251,35 @@ done
 These three `.vhdx` files are a slot. Continue with [install.md](install.md#4-add-a-slot).
 
 `bin/pack-vhdx.sh <partition dir> <name> [dest]` is for the other direction — packing an unpacked directory tree into ext4 and `.vhdx`. It needs `mkuserimg_mke2fs` and a `file_contexts.bin` from the **same** tree as the contents (`MKUSERIMG`/`FILE_CONTEXTS`, or `ANDROID_HOST_OUT`/`ANDROID_PRODUCT_OUT` from `lunch`); without SELinux labels the system will not boot. For tree builds the steps above are simpler.
+
+## Path A: a ready Google GSI (Android 15–17)
+
+Instead of a tree build, a slot can be made from Google's own prebuilt GSI (`aosp_x86_64`): split into partitions, Microsoft's components transplanted, and the platform fixes from [patches.md](patches.md) applied to the image's files — bytecode for Java (`bin/dexpatch/`), our own binaries for the two native ones. One command does all of it:
+
+```bash
+bin/fetch-gsi-tools.sh            # once: dexlib2 3.x, guava, apktool, avbtool, public AOSP keys
+bin/build-bridge-local.sh         # the bridge apk (out/WsaShellBridge.apk)
+bin/build-gsi-slot.sh --gsi aosp_x86_64-exp-BP2A.250605.031.A3-13578795-47b1a5bc.zip \
+    --work ~/gsi-work/a16 --slot-dir $WSA_STORAGE/slots --suffix .aosp16-gsi \
+    --surfaceflinger <your aosp16 system.img>:/system/bin/surfaceflinger
+# Android 17 additionally: --init <your aosp17 system.img>:/system/bin/init
+```
+
+`--work` must be on the WSL file system (the split GSI has symlinks) and needs ~3× the GSI size; it is cleaned up at the end. The three slot files land in `--slot-dir` as `<part>.vhdx<suffix>`; add the slot to `slots.conf` ([install.md](install.md)).
+
+**Which GSI.** Take the one from the **same branch** as an AOSP tree you built (path B): the native fixes are your own `surfaceflinger` (`0006`/`0008`, without it app windows stay a splash screen) and, on Android 17, your `init` (`a17/0021`: the stock Android 17 `/system/bin/init` has no first stage and aborts as PID 1 under WSA). They only fit a GSI whose libraries have the same ABI; the script checks every strong symbol before replacing (a GSI of another quarterly release fails it — e.g. `AP4A` against an `ap3a` build).
+
+| Android | GSI (dl.google.com/developers/android/…/images/gsi/) | branch | tree build |
+| --- | --- | --- | --- |
+| 15 | `vic/…/aosp_x86_64-exp-AP3A.241005.015-12366759-96716f9b.zip` | `ap3a` | `aosp15` |
+| 16 | `baklava/…/aosp_x86_64-exp-BP2A.250605.031.A3-13578795-47b1a5bc.zip` | `bp2a` | `aosp16` |
+| 17 | `cinnamonbun/…/aosp_x86_64-exp-CP2A.260605.012-15430684-3da2ca55.zip` | `cp2a` | `aosp17` |
+
+**What else it needs.** `$WSA_REF` (your WSA's partitions, as for step 7); `$TOOLS/hostbin/mkuserimg_mke2fs` with what it calls (`e2fsdroid`, `mke2fs`, … from `out/host/linux-x86/bin` of a tree build) and a JDK 17+ (`$TOOLS/jdk21` or `JAVA`); `VNDK_APEX` — `com.android.vndk.v33.apex` from `/system_ext/apex` of your Android 14 build (Microsoft's `vendor` is Android 13, `ro.vndk.version=33`, and Android 15+ GSIs ship no VNDK snapshot); `HOUDINI` — a libhoudini set laid out as for `bin/replace-houdini.sh` (BYOB). Defaults are under `$WSA_STORAGE` (`wsa-gsi-inputs/`, `wsa-houdini/gpg-26.8.237.1/`).
+
+**What it applies** (IDs from [patches.md](patches.md)): `0003` (activity-alias in `Settings.apk`, apktool), `0004`/`0005` (the tethering APEX re-signed with its own public AOSP key), `0006`/`0008` and `a17/0021` (our binaries), `0007` and `a16/0016` (`SystemUI.apk`), `0009` (default `onOpNoted(String,…)` forwarding to the API-33 method), `0011` (an RRO clearing the display-area policy class, `WsaGsiFrameworkFix`, which also re-enables the wallpaper service and disables keyguard), `a15/0013`, `a15/0014`, `a16/0015`, `a16/0017`, `a17/0019`; plus fstab with explicit `/dev/block/sdX` (instead of `0010`), the VNDK APEX, the bridge, Microsoft's components (`bin/transplant-a14.sh`), the logcat channel and the ARM translator. Where code cannot be inserted (no spare registers in the method), a call is redirected to a helper class of ours (`bin/dexpatch/platform/`, an extra `classesN.dex`). Each `bin/dexpatch/*.java` says what it changes and how it finds the place; every patch must match exactly as many places as expected, or the build stops.
+
+Verified live on 11.10.2026 on the GSIs above: boot, SELinux enforcing, app windows on the Windows desktop without a guest title bar, the bridge, network, `SystemApp`, ARM translation, WebView with GApps; Android 17 also with the stock Magisk/GApps `initrd`. Not verified on GSI slots: the issue #700 checklist, `F11` after a drag-resize (`a16/0017`).
 
 ## The bridge without a tree build
 

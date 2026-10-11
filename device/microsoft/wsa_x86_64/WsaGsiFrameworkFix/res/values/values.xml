@@ -8,4 +8,8 @@
          SystemUI dies with an NPE (WallpaperManager$Globals.mService == null) and crash-loops,
          dragging launcher3 along. On path B the same is fixed with a product overlay. -->
     <bool name="config_enableWallpaperService">true</bool>
+    <!-- No lock screen: while keyguard is shown, no app window gets a surface and the host keeps its
+         Windows window hidden (seen on the aosp15-gsi slot 11.10.2026). On path B this is the product
+         overlay plus ro.lockscreen.disable.default (device.mk). -->
+    <bool name="config_disableLockscreenByDefault">true</bool>
 </resources>

@@ -40,6 +40,7 @@ WSA's host (`WsaClient.exe`, `WsaService`) talks to the guest over ~26 protobuf 
 - **platform patches** for AOSP 14–17 (SCSI addressing in `fs_mgr`, SurfaceFlinger layer metadata, compatibility fixes for Microsoft's `SystemApp`, first-stage init on 17, …), each documented with why it is needed and on which versions;
 - **a device tree** (`device/microsoft/wsa_x86_64`) building against Microsoft's VNDK-33 `vendor`;
 - **scripts** to assemble images from your build tree plus components taken from **your own** WSA install, switch between system images ("slots") and `/data` pools, and diagnose boots from host-side logs.
+- **path A without a full image build** (Android 15–17): `bin/build-gsi-slot.sh` turns Google's prebuilt GSI into a slot — the Java fixes as bytecode patches (`bin/dexpatch/`), the two native ones (SurfaceFlinger, first-stage `init`) from your build of the same branch ([docs/build.md](docs/build.md#path-a-a-ready-google-gsi-android-1517));
 
 ## Requirements
 
