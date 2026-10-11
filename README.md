@@ -19,7 +19,7 @@ WSA-Reborn replaces the Android 13 guest of Windows Subsystem for Android™ (WS
 | Android 16 | AOSP `android16-security-release` | 2025-08 | works |
 | Android 17 | AOSP `android17-security-release` | 2026-05 | works |
 
-Tested on every Win11 x64 asset of WSABuilds LTS #8 (plain, Magisk, Magisk + GApps; with and without Amazon) — see [docs/variants.md](docs/variants.md). The original WSA checklist (MustardChef/WSABuilds#700) passes on all versions; Vulkan is limited by the host exactly as on stock WSA.
+Tested on every Win11 x64 asset of WSABuilds LTS #8 (plain, Magisk, Magisk + GApps; with and without Amazon) — see [docs/variants.md](docs/variants.md). The original WSA checklist (MustardChef/WSABuilds#700) passes on all versions; Vulkan and ANGLE work once WSA's own "Vulkan driver" setting is set (`bin/wsa-vulkan-driver.sh system`: the host GPU driver, Vulkan 1.3, ANGLE gives OpenGL ES 3.2); it is unset by default, which is why stock WSA shows no Vulkan device.
 
 ## What works
 
