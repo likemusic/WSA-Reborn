@@ -285,9 +285,9 @@ rm -rf "${SE:?}/priv-app/Settings/oat"
 
 step "SystemUI.apk: 0007 (no guest caption, insets, shadow — the host draws the frame), a16/0016, 0012 (Toast → Windows)"
 SU="$WORK/sysui"; rm -rf "${SU:?}"; mkdir -p "$SU"
-# 0007 has templates for A15–A17 only. The A14 GSI (QPR1) does not take our r75 (QPR3) surfaceflinger, so no
-# app windows reach Windows there anyway and the guest caption does not matter.
-[ "$VER" -ge 15 ] && dexpatch_jar "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/dex" WindowDecorPatch
+# 0007: templates for A14 (QPR1) and A15–A17. Without our surfaceflinger of the same branch (A14: r17, QPR1) app
+# windows do not reach Windows anyway, but the patch is harmless.
+dexpatch_jar "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/dex" WindowDecorPatch
 # a16/0016 (needed on A15 too): no SystemUI clipboard preview — it pops up as a separate window on the
 # Windows desktop, and copying already reaches the Windows clipboard through the bridge.
 dexpatch_jar "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/dex" ReturnVoidPatch \

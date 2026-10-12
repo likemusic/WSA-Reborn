@@ -1,4 +1,4 @@
-// Path A (ready GSI) counterpart of docs/patches.md `0007` (a15/0007, A16 variant in a16/frameworks_base.diff): the
+// Path A (ready GSI) counterpart of docs/patches/0007 (a15/0007, A16 variant in a16/frameworks_base.diff): the
 // Windows host draws the frame, title and shadow of the window, so WM Shell's own caption decoration for
 // freeform tasks must not show up as a second title bar inside it. In com.android.wm.shell.windowdecor
 // .WindowDecoration (SystemUI.apk) R8 has inlined the helpers, so the three edits are found by instruction
@@ -11,7 +11,10 @@
 //        A16: if-eqz mIsCaptionVisible (then mIsInsetSource) -> goto to the same target + nop;
 //   3. no guest shadow, the float fed to setShadowRadius becomes 0:
 //        A15: move-result of Resources.getDimension -> const/4 0;
-//        A16: int-to-float right before each setShadowRadius -> const/4 0 (four calls).
+//        A16: int-to-float right before each setShadowRadius -> const/4 0 (four calls);
+//   A14 (QPR1, GSI UQ1A): 1. as A15; 2. sget-boolean ViewRootImpl.CAPTION_ON_SHELL; if-eqz -> goto/16 to the same
+//        target (the else branch hides the caption and adds no insets); 3. move-result of getDimension reaches
+//        setShadowRadius through a merge label, so the register is followed further (12.10.2026).
 // Every replacement has the same size as the original, so branch offsets, try blocks and debug info stay valid.
 // Unlike the source patch this is unconditional (no ro.wsa.host_window_decor check): it only goes into WSA slots.
 // Run: bin/dexpatch.sh WindowDecorPatch <in.dex> <out.dex>. Exit code 1 unless all three edits were made (shadow: at least one call). 11.10.2026.
@@ -36,6 +39,7 @@ import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstructio
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction10t;
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction10x;
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction11n;
+import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction20t;
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction35c;
 import com.android.tools.smali.dexlib2.immutable.reference.ImmutableMethodReference;
 import com.android.tools.smali.dexlib2.rewriter.DexRewriter;
@@ -115,6 +119,16 @@ public class WindowDecorPatch {
                 out.add(k + 2, new ImmutableInstruction10x(Opcode.NOP));     // if-eqz is 2 code units, goto is 1
                 insets++;
             }
+            // 2 (A14). sget-boolean vX, ViewRootImpl.CAPTION_ON_SHELL; if-eqz vX, :hide -> goto/16 :hide
+            if (i.getOpcode() == Opcode.SGET_BOOLEAN && k + 1 < out.size()
+                    && out.get(k + 1).getOpcode() == Opcode.IF_EQZ && i instanceof ReferenceInstruction) {
+                FieldReference f = (FieldReference) ((ReferenceInstruction) i).getReference();
+                if (f.getDefiningClass().equals("Landroid/view/ViewRootImpl;") && f.getName().equals("CAPTION_ON_SHELL")) {
+                    int off = ((OffsetInstruction) out.get(k + 1)).getCodeOffset();
+                    out.set(k + 1, new ImmutableInstruction20t(Opcode.GOTO_16, off)); // 2 code units, like if-eqz
+                    insets++;
+                }
+            }
             // 3 (A16). int-to-float vX, vY; invoke-virtual {t, surface, vX}, Transaction.setShadowRadius
             if (i.getOpcode() == Opcode.INT_TO_FLOAT && k + 1 < out.size()) {
                 MethodReference next = methodRef(out.get(k + 1));
@@ -138,6 +152,21 @@ public class WindowDecorPatch {
                 if (feedsShadow && reg < 16) {
                     out.set(k + 1, new ImmutableInstruction11n(Opcode.CONST_4, reg, 0));
                     shadow++;
+                }
+            }
+            // 3 (A14). invoke-virtual Resources.getDimension; move-result vX; goto/label ...; setShadowRadius(.., vX)
+            if (mr != null && mr.getDefiningClass().equals("Landroid/content/res/Resources;")
+                    && mr.getName().equals("getDimension") && k + 1 < out.size()
+                    && out.get(k + 1).getOpcode() == Opcode.MOVE_RESULT) {
+                int reg = ((OneRegisterInstruction) out.get(k + 1)).getRegisterA();
+                for (int j = k + 2; j < Math.min(out.size(), k + 80); j++) {
+                    MethodReference m2 = methodRef(out.get(j));
+                    if (m2 == null || !m2.getName().equals("setShadowRadius")) continue;
+                    if (((Instruction35c) out.get(j)).getRegisterE() == reg && reg < 16) {
+                        out.set(k + 1, new ImmutableInstruction11n(Opcode.CONST_4, reg, 0));
+                        shadow++;
+                    }
+                    break;
                 }
             }
         }
