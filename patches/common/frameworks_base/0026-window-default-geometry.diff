@@ -1,0 +1,47 @@
+New freeform windows sized and oriented as on Microsoft's WSA (12.10.2026, owner's decision: "own modifier after
+Microsoft's"). Microsoft's WsaLaunchParamsModifier (windows-system_server.jar) is a copy of AOSP TaskLaunchParamsModifier
+whose only difference that matters is the default window: 1280x720 dp, 480x720 dp for portrait apps, an app without an
+orientation opens landscape. AOSP gives such an app portrait 412x732 dp ("phone") and caps the default size to a letterbox
+of the stable area (1500x878 px on a 2560x1600 display). Fitting into the Windows work area stays with the bridge
+(ShellBridge.fitToHostWorkArea), cascading and overlap avoidance with AOSP. Measured live with bin/wsa-window-geometry.sh:
+Settings on ms13-stock 1618x947 px at x=471, with this patch the same 1618x947 px at x=471.
+Same code in Android 14 (r75), 15, 16. Bytecode form: bin/services-0026.sh (ConstReplacePatch, InvokeRenamePatch).
+
+diff --git a/services/core/java/com/android/server/wm/LaunchParamsUtil.java b/services/core/java/com/android/server/wm/LaunchParamsUtil.java
+--- a/services/core/java/com/android/server/wm/LaunchParamsUtil.java
++++ b/services/core/java/com/android/server/wm/LaunchParamsUtil.java
+@@ -39,12 +39,13 @@
+-    static final int DEFAULT_PORTRAIT_FREEFORM_WIDTH_DP = 412;
+-    static final int DEFAULT_PORTRAIT_FREEFORM_HEIGHT_DP = 732;
++    // WSA: default window sizes of Microsoft's WsaLaunchParamsModifier.
++    static final int DEFAULT_PORTRAIT_FREEFORM_WIDTH_DP = 480;
++    static final int DEFAULT_PORTRAIT_FREEFORM_HEIGHT_DP = 720;
+ 
+     // One of the most common tablet sizes that are small enough to fit in most large screens.
+-    private static final int DEFAULT_LANDSCAPE_FREEFORM_WIDTH_DP = 1064;
+-    private static final int DEFAULT_LANDSCAPE_FREEFORM_HEIGHT_DP = 600;
++    private static final int DEFAULT_LANDSCAPE_FREEFORM_WIDTH_DP = 1280;
++    private static final int DEFAULT_LANDSCAPE_FREEFORM_HEIGHT_DP = 720;
+@@ -93,7 +94,9 @@
+         // displayArea's. Here we use stable bounds of displayArea because that indicates the area
+         // that isn't occupied by system widgets (e.g. sysbar and navbar).
+-        final int portraitHeight = Math.min(stableBounds.width(), stableBounds.height());
++        // WSA: no letterbox cap — a window on a desktop may be wider than the short side of the screen; fitting into the
++        // screen is done by TaskLaunchParamsModifier and into the Windows work area by the bridge.
++        final int portraitHeight = Math.max(stableBounds.width(), stableBounds.height());
+         final int otherDimension = Math.max(stableBounds.width(), stableBounds.height());
+         final int portraitWidth = (portraitHeight * portraitHeight) / otherDimension;
+diff --git a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+--- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
++++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+@@ -861,9 +861,10 @@
+         if (orientation == SCREEN_ORIENTATION_UNSPECIFIED) {
+-            orientation = bounds.isEmpty() ? SCREEN_ORIENTATION_PORTRAIT
++            // WSA: an app without an orientation opens landscape, as on Microsoft's WSA.
++            orientation = bounds.isEmpty() ? SCREEN_ORIENTATION_LANDSCAPE
+                     : orientationFromBounds(bounds);
+             if (DEBUG) {
+-                appendLog(bounds.isEmpty() ? "default-portrait"
++                appendLog(bounds.isEmpty() ? "default-landscape"
+                         : "orientation-from-bounds=" + bounds);
+             }
