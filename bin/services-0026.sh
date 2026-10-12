@@ -5,10 +5,15 @@
 #   bin/services-0026.sh <services.jar> <out.jar>
 #
 # Six edits in the dex that holds com.android.server.wm.LaunchParamsUtil (ConstReplacePatch ×5, InvokeRenamePatch ×1),
-# then the jar is rewritten with the same entries and compression and zipaligned (framework jars are not signed). Put
-# the result into a slot with PART=system bin/patch-slots.sh /system/framework/services.jar=<out.jar>
-# /system/framework/oat/x86_64/services.art= -- <slot> (it also drops the stale services.odex/vdex). Android 14–16
-# have the same code; on another version a missing literal stops the script. 12.10.2026.
+# then the jar is rewritten with the same entries and compression and zipaligned (framework jars are not signed).
+# Android 13–17 have the same code; on another version a missing literal stops the script. 12.10.2026.
+#
+# NOT FOR SLOTS BUILT FROM A TREE (path B). Their /system/framework/oat holds odex of every system_server classpath jar,
+# compiled with the checksum of the original services.jar: after replacing it they all mismatch ("ClassLoaderContext
+# classpath element checksum mismatch"), system_server runs slow and a first boot on a fresh /data on a loaded machine
+# misses the host's timeout (WsaClient 0x23ba7, the VM restarts every ~2 min; 13.10.2026). For path B rebuild
+# system.img with docs/patches/0026 in the tree and put it in with bin/system-img-to-slot.sh. Path A uses the same
+# edits inside bin/build-gsi-slot.sh.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 in=$(realpath "${1:?services.jar}") out=${2:?out.jar}
