@@ -1,3 +1,10 @@
+From 3029dfc7c2e02fbb94d12410516208b81a3c8f64 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Mon, 12 Oct 2026 21:34:23 +0000
+Subject: [PATCH] 0026: WSA default window geometry - 1280x720 dp, 480x720
+ portrait, landscape without orientation, no letterbox cap
+
+
 New freeform windows sized and oriented as on Microsoft's WSA (12.10.2026, owner's decision: "own modifier after
 Microsoft's"). Microsoft's WsaLaunchParamsModifier (windows-system_server.jar) is a copy of AOSP TaskLaunchParamsModifier
 whose only difference that matters is the default window: 1280x720 dp, 480x720 dp for portrait apps, an app without an
@@ -7,10 +14,22 @@ of the stable area (1500x878 px on a 2560x1600 display). Fitting into the Window
 Settings on ms13-stock 1618x947 px at x=471, with this patch the same 1618x947 px at x=471.
 Same code in Android 14 (r75), 15, 16. Bytecode form: bin/services-0026.sh (ConstReplacePatch, InvokeRenamePatch).
 
+Applies as is to Android 14 (r75), 15, 16 and LineageOS 21 (checked 13.10.2026); Android 17 and LineageOS 24 — 0026-window-default-geometry-a17.diff (one-line appendLog).
+
+Change-Id: Ie9b291d775606ac8fd0b4a1d00c848d88c2f1318
+---
+ .../com/android/server/wm/LaunchParamsUtil.java     | 13 ++++++++-----
+ .../android/server/wm/TaskLaunchParamsModifier.java |  5 +++--
+ 2 files changed, 11 insertions(+), 7 deletions(-)
+
 diff --git a/services/core/java/com/android/server/wm/LaunchParamsUtil.java b/services/core/java/com/android/server/wm/LaunchParamsUtil.java
+index cd071af6c..5a9373cb7 100644
 --- a/services/core/java/com/android/server/wm/LaunchParamsUtil.java
 +++ b/services/core/java/com/android/server/wm/LaunchParamsUtil.java
-@@ -39,12 +39,13 @@
+@@ -37,12 +37,13 @@ class LaunchParamsUtil {
+     private static final boolean DEBUG = false;
+ 
+     // Screen size of Nexus 5x
 -    static final int DEFAULT_PORTRAIT_FREEFORM_WIDTH_DP = 412;
 -    static final int DEFAULT_PORTRAIT_FREEFORM_HEIGHT_DP = 732;
 +    // WSA: default window sizes of Microsoft's WsaLaunchParamsModifier.
@@ -22,7 +41,11 @@ diff --git a/services/core/java/com/android/server/wm/LaunchParamsUtil.java b/se
 -    private static final int DEFAULT_LANDSCAPE_FREEFORM_HEIGHT_DP = 600;
 +    private static final int DEFAULT_LANDSCAPE_FREEFORM_WIDTH_DP = 1280;
 +    private static final int DEFAULT_LANDSCAPE_FREEFORM_HEIGHT_DP = 720;
-@@ -93,7 +94,9 @@
+ 
+     private static final int DISPLAY_EDGE_OFFSET_DP = 27;
+ 
+@@ -91,7 +92,9 @@ class LaunchParamsUtil {
+         // dimension of default size is calculated to keep the same aspect ratio as the
          // displayArea's. Here we use stable bounds of displayArea because that indicates the area
          // that isn't occupied by system widgets (e.g. sysbar and navbar).
 -        final int portraitHeight = Math.min(stableBounds.width(), stableBounds.height());
@@ -31,10 +54,14 @@ diff --git a/services/core/java/com/android/server/wm/LaunchParamsUtil.java b/se
 +        final int portraitHeight = Math.max(stableBounds.width(), stableBounds.height());
          final int otherDimension = Math.max(stableBounds.width(), stableBounds.height());
          final int portraitWidth = (portraitHeight * portraitHeight) / otherDimension;
+         final int maxWidth = (orientation == SCREEN_ORIENTATION_LANDSCAPE) ? portraitHeight
 diff --git a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+index 3917868f2..4952b2e90 100644
 --- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
 +++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
-@@ -861,9 +861,10 @@
+@@ -860,10 +860,11 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+         }
+ 
          if (orientation == SCREEN_ORIENTATION_UNSPECIFIED) {
 -            orientation = bounds.isEmpty() ? SCREEN_ORIENTATION_PORTRAIT
 +            // WSA: an app without an orientation opens landscape, as on Microsoft's WSA.
@@ -45,3 +72,7 @@ diff --git a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.j
 +                appendLog(bounds.isEmpty() ? "default-landscape"
                          : "orientation-from-bounds=" + bounds);
              }
+         }
+-- 
+2.43.0
+
