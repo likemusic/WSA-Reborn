@@ -39,6 +39,8 @@
 #     a16/0016 (ReturnVoidPatch on ClipboardListener.onPrimaryClipChanged — no clipboard preview),
 #     0012 (ToastUiPatch + helper WsaToast — Toasts shown by Windows through the bridge);
 #   * Android 17+: Launcher3QuickStep.apk a17/0024 (NullFieldReturnPatch — taskbar NPE after onDestroy);
+#   * Android 14 (QPR1): Launcher3QuickStep.apk a14/0025 (NullFieldReturnPatch ×3 — taskbar NPEs on mBackButton and
+#     mControllers);
 #   * RRO WsaGsiFrameworkFix built from device/microsoft/wsa_x86_64/WsaGsiFrameworkFix;
 #   * our WsaShellBridge with its allowlist (out/WsaShellBridge.apk — bin/build-bridge-local.sh);
 #   * on Android 17, our /system/bin/init with a17/0021 (--init, same form) — the stock one has no first stage;
@@ -310,6 +312,23 @@ if [ "$VER" -ge 17 ]; then
         'Lcom/android/launcher3/taskbar/TaskbarNavButtonController;' onRecentsButtonLayoutChanged mControllers
     repack_zip "$L3" "$LA/aligned.apk" "$LA/dex"
     # The GSI signs Launcher3 with the AOSP testkey (not the platform key).
+    "$BT/apksigner" sign --v4-signing-enabled false --key "$KEYS/testkey.pk8" --cert "$KEYS/testkey.x509.pem" --out "$L3" "$LA/aligned.apk"
+    rm -rf "${SE:?}/priv-app/Launcher3QuickStep/oat"
+fi
+
+if [ "$VER" -eq 14 ]; then
+    # a14/0025: two taskbar NPEs of Launcher3 QPR1 — mBackButton before initButtons() (read in several branches, so
+    # every read is guarded) and mControllers after onDestroy().
+    step "Launcher3QuickStep.apk: a14/0025 (taskbar null guards)"
+    LA="$WORK/launcher"; rm -rf "${LA:?}"; mkdir -p "$LA"
+    L3="$SE/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk"
+    dexpatch_jar "$L3" "$LA/dex" NullFieldReturnPatch \
+        'Lcom/android/launcher3/taskbar/NavbarButtonsViewController;' updateButtonLayoutSpacing mBackButton all
+    dexpatch_jar "$L3" "$LA/dex" NullFieldReturnPatch \
+        'Lcom/android/launcher3/taskbar/NavbarButtonsViewController;' updateNavButtonInAppDisplayProgressForSysui mControllers
+    dexpatch_jar "$L3" "$LA/dex" NullFieldReturnPatch \
+        'Lcom/android/launcher3/taskbar/NavbarButtonsViewController;' updateNavButtonTranslationY mControllers
+    repack_zip "$L3" "$LA/aligned.apk" "$LA/dex"
     "$BT/apksigner" sign --v4-signing-enabled false --key "$KEYS/testkey.pk8" --cert "$KEYS/testkey.x509.pem" --out "$L3" "$LA/aligned.apk"
     rm -rf "${SE:?}/priv-app/Launcher3QuickStep/oat"
 fi

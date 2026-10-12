@@ -1,0 +1,46 @@
+Launcher3 of Android 14 QPR1 (android-14.0.0_r17, GSI UQ1A) — two taskbar NPEs, 1–2 launcher3 crashes per boot of
+the aosp14-gsi slot (12.10.2026):
+1. updateButtonLayoutSpacing() runs from onConfigurationChanged() and touches mBackButton, which initButtons() creates
+   only when the taskbar is built in 3-button navigation or during setup; when the mode turns 3-button later the field
+   is still null.
+2. updateNavButtonInAppDisplayProgressForSysui() and updateNavButtonTranslationY() run after onDestroy() cleared
+   mControllers (as a17/0024): onDestroy() itself calls setUIController() → onUiControllerChanged() → both.
+Applied to the GSI slot as bytecode (bin/build-gsi-slot.sh, NullFieldReturnPatch; the first with "all" — mBackButton is
+read in several branches).
+
+diff --git a/quickstep/src/com/android/launcher3/taskbar/NavbarButtonsViewController.java b/quickstep/src/com/android/launcher3/taskbar/NavbarButtonsViewController.java
+--- a/quickstep/src/com/android/launcher3/taskbar/NavbarButtonsViewController.java
++++ b/quickstep/src/com/android/launcher3/taskbar/NavbarButtonsViewController.java
+@@ -606,6 +606,10 @@
+ 
+     private void updateNavButtonInAppDisplayProgressForSysui() {
++        // WSA: an animation can still call this after onDestroy() has cleared mControllers.
++        if (mControllers == null) {
++            return;
++        }
+         TaskbarUIController uiController = mControllers.uiController;
+         if (uiController instanceof LauncherTaskbarUIController) {
+             ((LauncherTaskbarUIController) uiController).onTaskbarInAppDisplayProgressUpdate(
+@@ -619,6 +623,10 @@
+     public void updateNavButtonTranslationY() {
+         if (isPhoneButtonNavMode(mContext)) {
+             return;
+         }
++        // WSA: onDestroy() → setUIController() → onUiControllerChanged() lands here after mControllers was cleared.
++        if (mControllers == null) {
++            return;
++        }
+         final float normalTranslationY = mTaskbarNavButtonTranslationY.value;
+         final float imeAdjustmentTranslationY = mTaskbarNavButtonTranslationYForIme.value;
+         TaskbarUIController uiController = mControllers.uiController;
+@@ -722,6 +730,10 @@
+      * setup wizard, or normal 3 button nav.
+      */
+     private void updateButtonLayoutSpacing() {
++        // WSA: buttons exist only if initButtons() ran (taskbar created in 3-button navigation or during setup).
++        if (mBackButton == null) {
++            return;
++        }
+         boolean isThreeButtonNav = mContext.isThreeButtonNav();
+ 
+         DeviceProfile dp = mContext.getDeviceProfile();

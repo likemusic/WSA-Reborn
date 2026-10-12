@@ -3,9 +3,12 @@
 // TaskbarNavButtonController.onRecentsButtonLayoutChanged reads mControllers.cueBarController after onDestroy has
 // set mControllers to null: NPE, launcher3 crashes). Needs no spare registers: only vA is read.
 //
-// Run: bin/dexpatch.sh NullFieldReturnPatch <in.dex> <out.dex> <class descriptor> <method> <field name>
+// Run: bin/dexpatch.sh NullFieldReturnPatch <in.dex> <out.dex> <class descriptor> <method> <field name> [all]
 //   e.g. 'Lcom/android/launcher3/taskbar/TaskbarNavButtonController;' onRecentsButtonLayoutChanged mControllers
-// Exit code 1 unless exactly one read of the field was guarded. 12.10.2026.
+// Exit code 1 unless exactly one read of the field was guarded. With "all" every read is guarded (a field read in
+// several branches: Launcher3 A14 QPR1 NavbarButtonsViewController.updateButtonLayoutSpacing and mBackButton, which is
+// null until initButtons() ran — the taskbar was created in gesture navigation) and at least one is required.
+// 12.10.2026.
 import com.android.tools.smali.dexlib2.DexFileFactory;
 import com.android.tools.smali.dexlib2.Opcode;
 import com.android.tools.smali.dexlib2.Opcodes;
@@ -34,6 +37,7 @@ import java.util.List;
 public class NullFieldReturnPatch {
     public static void main(String[] args) throws Exception {
         final String cls = args[2], name = args[3], field = args[4];
+        final boolean all = args.length > 5 && args[5].equals("all");
         final int[] done = {0};
         DexFile dex = DexFileFactory.loadDexFile(new File(args[0]), Opcodes.forDexVersion(39));
         DexRewriter rw = new DexRewriter(new RewriterModule() {
@@ -46,22 +50,25 @@ public class NullFieldReturnPatch {
                     if (!m.getReturnType().equals("V")) throw new IllegalStateException(name + " is not void");
                     MutableMethodImplementation mi = new MutableMethodImplementation(impl);
                     List<BuilderInstruction> code = mi.getInstructions();
-                    int at = -1, reg = -1;
+                    java.util.List<int[]> reads = new java.util.ArrayList<>();
                     for (int k = 0; k < code.size(); k++) {
                         BuilderInstruction i = code.get(k);
                         if (i.getOpcode() != Opcode.IGET_OBJECT) continue;
                         FieldReference f = (FieldReference) ((ReferenceInstruction) i).getReference();
                         if (!f.getDefiningClass().equals(cls) || !f.getName().equals(field)) continue;
-                        if (at >= 0) throw new IllegalStateException(field + " is read more than once in " + name);
-                        at = k;
-                        reg = ((TwoRegisterInstruction) i).getRegisterA();
+                        if (!all && !reads.isEmpty()) throw new IllegalStateException(field + " is read more than once in " + name);
+                        reads.add(new int[] {k, ((TwoRegisterInstruction) i).getRegisterA()});
                     }
-                    if (at < 0) return base.rewrite(m);
-                    // … iget-object vA; if-nez vA, :next; return-void; :next …
-                    Label next = mi.newLabelForIndex(at + 1);
-                    mi.addInstruction(at + 1, new BuilderInstruction10x(Opcode.RETURN_VOID));
-                    mi.addInstruction(at + 1, new BuilderInstruction21t(Opcode.IF_NEZ, reg, next));
-                    done[0]++;
+                    if (reads.isEmpty()) return base.rewrite(m);
+                    // From the last read backwards, so earlier indices stay valid.
+                    for (int r = reads.size() - 1; r >= 0; r--) {
+                        int at = reads.get(r)[0], reg = reads.get(r)[1];
+                        // … iget-object vA; if-nez vA, :next; return-void; :next …
+                        Label next = mi.newLabelForIndex(at + 1);
+                        mi.addInstruction(at + 1, new BuilderInstruction10x(Opcode.RETURN_VOID));
+                        mi.addInstruction(at + 1, new BuilderInstruction21t(Opcode.IF_NEZ, reg, next));
+                        done[0]++;
+                    }
                     return new ImmutableMethod(m.getDefiningClass(), m.getName(), m.getParameters(), m.getReturnType(),
                             m.getAccessFlags(), m.getAnnotations(), m.getHiddenApiRestrictions(), mi);
                 };
@@ -69,6 +76,6 @@ public class NullFieldReturnPatch {
         });
         DexPool.writeTo(new FileDataStore(new File(args[1])), rw.getDexFileRewriter().rewrite(dex));
         System.out.println("null field guarded: " + done[0]);
-        if (done[0] != 1) System.exit(1);
+        if (all ? done[0] < 1 : done[0] != 1) System.exit(1);
     }
 }

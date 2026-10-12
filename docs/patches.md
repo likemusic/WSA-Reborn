@@ -77,6 +77,7 @@ Legend: **yes** — included and needed (observed live or confirmed from the tar
 | `a15/0022` | `frameworks/base` `AudioService.java` | `null` check in `anonymizeAudioDeviceAttributesUnchecked` (backport) | `com.google.android.gms.persistent` crashes at every start (NPE) when GMS lacks `BLUETOOTH_CONNECT` | yes | yes | yes | no | no |
 | `a15/0023` | `packages/modules/Bluetooth` `BluetoothManagerService.java` | no one-time bind to read the adapter name/address at boot (Android 16 removed it) | on every first boot with a fresh `/data` Microsoft's Bluetooth HAL aborts in `initialize()` (`rootcanal::ScriptedBeacon`, `std::stoi`), twice, and `com.android.bluetooth` with it | yes | yes | yes | no | no |
 | `a17/0024` | `packages/apps/Launcher3` `TaskbarNavButtonController.java` | `mControllers != null` in `onRecentsButtonLayoutChanged` | `launcher3` crashes (NPE `cueBarController`) when the taskbar reports after `onDestroy()` — seen at boot | no | no | no | no | yes |
+| `a14/0025` | `packages/apps/Launcher3` `NavbarButtonsViewController.java` (Android 14 QPR1) | return early when `mBackButton` is not created yet or `mControllers` is already cleared | `launcher3` crashes once or twice per boot of the Android 14 GSI slot (NPE in `updateButtonLayoutSpacing` / `updateNavButtonTranslationY`) | path A only | — | — | — | — |
 
 `0001`/`0002` were early SurfaceFlinger experiments (`SurfaceFlinger.cpp` key map and `Layer.cpp` metadata) written before `0006`. They are superseded by `0006` but still present in the LineageOS `frameworks_native` patch, because they remained in that build tree; they are not part of any AOSP series.
 
@@ -157,6 +158,10 @@ On a fresh `/data`, `BluetoothManagerService` does not know the adapter name and
 ### a17/0024 — Launcher3 taskbar after `onDestroy()`
 
 A bug of Launcher3 in Android 17: `TaskbarNavButtonController.onRecentsButtonLayoutChanged` reads `mControllers.cueBarController` after `onDestroy()` has cleared `mControllers`. The taskbar is recreated when the display changes, which WSA does at boot, so `launcher3` crashes once or twice. Tested as a bytecode edit (`bin/dexpatch/NullFieldReturnPatch.java`, path A); the source patch has not been built in a tree.
+
+### a14/0025 — Launcher3 taskbar of Android 14 QPR1
+
+Only the Android 14 GSI (`UQ1A`, QPR1) needs it. The taskbar creates its navigation buttons (`initButtons()`) only when it is built in three-button navigation or during setup, but `onConfigurationChanged()` always calls `updateButtonLayoutSpacing()`, which touches `mBackButton` — null when the mode became three-button later. And `onDestroy()` calls `setUIController()` → `onUiControllerChanged()`, which reads `mControllers` that `onDestroy()` has just cleared (the same kind of bug as `a17/0024`). WSA recreates the taskbar at boot, so `launcher3` crashed once or twice. Applied as bytecode by `bin/build-gsi-slot.sh` (`NullFieldReturnPatch`; for `mBackButton`, which is read in several branches, with `all` — every read guarded); verified live on a fresh `/data`: no `launcher3` crashes. The source patch (`patches/aosp14-gsi-qpr1/packages_apps_Launcher3/`) has not been built in a tree.
 
 ## LineageOS-only changes
 
