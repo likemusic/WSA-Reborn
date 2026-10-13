@@ -43,7 +43,12 @@ public class InvokeToStaticPatch {
     }
 
     public static void main(String[] args) throws Exception {
-        final String cls = args[2], name = args[3], target = args[4], helper = args[5], helperName = args[6];
+        final String cls = args[2], name = args[3], helper = args[5], helperName = args[6];
+        // <target> is a method name of <class> itself, or "Lsome/Class;.name" for a method of another class (Android 17
+        // adjustBoundsToAvoidConflictInDisplayArea calls DisplayArea.forAllLeafTasks); "*;.name" matches any class.
+        final int dot = args[4].indexOf(";.");
+        final String targetCls = dot < 0 ? cls : args[4].substring(0, dot + 1);
+        final String target = dot < 0 ? args[4] : args[4].substring(dot + 2);
         final int[] done = {0};
         DexFile dex = DexFileFactory.loadDexFile(new File(args[0]), Opcodes.forDexVersion(39));
         DexRewriter rw = new DexRewriter(new RewriterModule() {
@@ -61,7 +66,7 @@ public class InvokeToStaticPatch {
                         boolean range = op == Opcode.INVOKE_DIRECT_RANGE || op == Opcode.INVOKE_VIRTUAL_RANGE;
                         if (!range && op != Opcode.INVOKE_DIRECT && op != Opcode.INVOKE_VIRTUAL) continue;
                         MethodReference r = (MethodReference) ((ReferenceInstruction) i).getReference();
-                        if (!r.getDefiningClass().equals(cls) || !r.getName().equals(target)) continue;
+                        if (!(targetCls.equals("*;") || r.getDefiningClass().equals(targetCls)) || !r.getName().equals(target)) continue;
                         List<String> params = new ArrayList<>();
                         params.add("Ljava/lang/Object;");
                         for (CharSequence p : r.getParameterTypes()) params.add(widen(p.toString()));

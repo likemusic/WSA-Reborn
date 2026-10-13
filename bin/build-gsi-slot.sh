@@ -28,7 +28,7 @@
 #   * A15/A16: framework.jar a16/0017 (ViewRootCropPatch + helper bin/dexpatch/platform, an extra classesN.dex);
 #   * Android 17+: framework.jar a17/0019 (InputManagerGetInstancePatch — InputManager.getInstance() added back);
 #   * services.jar: 0026 (ConstReplacePatch, InvokeRenamePatch — new windows 1280x720 dp, landscape, as on Microsoft's
-#     WSA), 0027 (InvokeToStaticPatch + helper WsaCascade — cascade 75 dp from the topmost window); a15/0014 (WebViewFallbackPatch + helper WsaWebView); on Android 15 a15/0022 (ReturnIfNullPatch on
+#     WSA), 0027 (InvokeToStaticPatch + helper WsaCascade — cascade 75 dp from the topmost window), 0028 (same helper: a trampoline's window takes its place); a15/0014 (WebViewFallbackPatch + helper WsaWebView); on Android 15 a15/0022 (ReturnIfNullPatch on
 #     AudioService.anonymizeAudioDeviceAttributesUnchecked); on Android 16+ a16/0015 (ReturnParamPatch on
 #     PlatformCompat.fixTargetSdk);
 #   * com.android.tethering: 0004 (ReturnVoidPatch) and 0005 (NetworkSpecifierPatch), the module
@@ -238,6 +238,11 @@ dexpatch_jar "$S/framework/services.jar" "$SV/dex" InvokeRenamePatch 'Lcom/andro
 dexpatch_jar "$S/framework/services.jar" "$SV/dex" ConstReplacePatch 'Lcom/android/server/wm/TaskLaunchParamsModifier;' resolveOrientation/3 1 0
 # 0027: a window launched from Windows cascades 75 dp from the topmost freeform window (helper WsaCascade).
 dexpatch_jar "$S/framework/services.jar" "$SV/dex" InvokeToStaticPatch 'Lcom/android/server/wm/TaskLaunchParamsModifier;' calculate getTaskBounds 'Lcom/wsa/gsi/WsaCascade;' getTaskBounds
+# 0028: a window launched by a trampoline (source not drawn yet) takes the source task's place (same helper).
+dexpatch_jar "$S/framework/services.jar" "$SV/dex" InvokeToStaticPatch 'Lcom/android/server/wm/TaskLaunchParamsModifier;' calculate cascadeBounds 'Lcom/wsa/gsi/WsaCascade;' cascadeBounds
+# (Android 17 walks leaf tasks there: forAllLeafTasks instead of forAllRootTasks.)
+dexpatch_jar "$S/framework/services.jar" "$SV/dex" InvokeToStaticPatch 'Lcom/android/server/wm/TaskLaunchParamsModifier;' adjustBoundsToAvoidConflictInDisplayArea '*;.forAllRootTasks' 'Lcom/wsa/gsi/WsaCascade;' forAllRootTasks \
+    || dexpatch_jar "$S/framework/services.jar" "$SV/dex" InvokeToStaticPatch 'Lcom/android/server/wm/TaskLaunchParamsModifier;' adjustBoundsToAvoidConflictInDisplayArea '*;.forAllLeafTasks' 'Lcom/wsa/gsi/WsaCascade;' forAllLeafTasks
 add_helper "$S/framework/services.jar" "$SV/dex" WsaCascade
 repack_zip "$S/framework/services.jar" "$SV/services.jar" "$SV/dex"
 cp "$SV/services.jar" "$S/framework/services.jar"

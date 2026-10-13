@@ -1,0 +1,39 @@
+A window launched by a trampoline (a source activity that has not drawn a frame yet, e.g. Files' LauncherActivity, which starts FilesActivity in a new task and finishes) takes the trampoline task's place instead of cascading 75 dp from it, and tasks whose top activity has not drawn yet are left out of the conflict check (otherwise the window that took the trampoline's place is pushed 1/16 of the screen away from the still-alive trampoline task). On Microsoft's WSA Files opens one cascade step (+94 px) from the previous window; without this patch it was two (+188 px, the second step from AOSP's own source-activity branch) — and with only the first hunk +254,+194 px (the conflict check). Verified live on aosp17-gsi through the path A counterpart (WsaCascade): +94,+94 px. On top of 0026+0027. Generated with diff -u from the lineage-21 tree (android-14 based); the same hunks apply to android-13..16 (only line numbers differ). Android 17 / LineageOS 24 — 0028-trampoline-takes-source-place-a17.diff (there the conflict check walks leaf tasks with isVisibleRequested()).
+
+--- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
++++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+@@ -387,9 +387,17 @@
+                     && resolvedMode == WINDOWING_MODE_FREEFORM
+                     && outParams.mBounds.isEmpty()
+                     && source.getDisplayArea() == taskDisplayArea) {
+-                // Set bounds to be not very far from source activity.
+-                cascadeBounds(source.getConfiguration().windowConfiguration.getBounds(),
+-                        taskDisplayArea, outParams.mBounds);
++                if (source.firstWindowDrawn) {
++                    // Set bounds to be not very far from source activity.
++                    cascadeBounds(source.getConfiguration().windowConfiguration.getBounds(),
++                            taskDisplayArea, outParams.mBounds);
++                } else {
++                    // WSA: a source that has not drawn a frame yet is a trampoline (Files'
++                    // LauncherActivity starts FilesActivity in a new task and finishes): it never
++                    // was a window, so the new task takes its place instead of cascading 75 dp
++                    // further, as on Microsoft's WSA.
++                    outParams.mBounds.set(source.getConfiguration().windowConfiguration.getBounds());
++                }
+             } else if (resolvedMode == WINDOWING_MODE_FREEFORM && outParams.mBounds.isEmpty()
+                     && !hasInitialBounds) {
+                 // WSA: a window launched from Windows (wsa://, Start menu) has no source activity;
+@@ -911,6 +919,13 @@
+             if (!task.inFreeformWindowingMode()) {
+                 return;
+             }
++            // WSA: a task whose top activity has not drawn a frame yet is a trampoline on its way
++            // out (or a window still being created), not a window to keep clear of; otherwise the
++            // window that takes a trampoline's place is pushed 1/16 of the screen away.
++            final ActivityRecord top = task.getTopMostActivity();
++            if (top != null && !top.firstWindowDrawn) {
++                return;
++            }
+ 
+             for (int j = 0; j < task.getChildCount(); ++j) {
+                 taskBoundsToCheck.add(task.getChildAt(j).getBounds());
