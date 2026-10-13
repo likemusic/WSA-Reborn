@@ -1,4 +1,4 @@
-Android 17 / LineageOS 24 variant of 0028-trampoline-takes-source-place.diff: the same two changes; the conflict check of android-17 walks leaf tasks (forAllLeafTasks, isVisibleRequested()). Generated with diff -u from the A16 file with adjustBoundsToAvoidConflictInDisplayArea replaced by the wsa-a17 text (checked equal in wsa-l24) — line numbers approximate, the context lines are exact.
+Android 16 QPR2 (LineageOS 23.2), Android 17 and LineageOS 24 variant of 0028-trampoline-takes-source-place.diff: the same two changes; the conflict check there walks leaf tasks (forAllLeafTasks, isVisibleRequested()). Generated with diff -u from the A16 file with adjustBoundsToAvoidConflictInDisplayArea replaced by the wsa-a17 text (checked equal in wsa-l24) — line numbers approximate, the context lines are exact.
 
 --- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
 +++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
