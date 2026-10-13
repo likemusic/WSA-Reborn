@@ -28,7 +28,7 @@
 #   * A15/A16: framework.jar a16/0017 (ViewRootCropPatch + helper bin/dexpatch/platform, an extra classesN.dex);
 #   * Android 17+: framework.jar a17/0019 (InputManagerGetInstancePatch — InputManager.getInstance() added back);
 #   * services.jar: 0026 (ConstReplacePatch, InvokeRenamePatch — new windows 1280x720 dp, landscape, as on Microsoft's
-#     WSA); a15/0014 (WebViewFallbackPatch + helper WsaWebView); on Android 15 a15/0022 (ReturnIfNullPatch on
+#     WSA), 0027 (InvokeToStaticPatch + helper WsaCascade — cascade 75 dp from the topmost window); a15/0014 (WebViewFallbackPatch + helper WsaWebView); on Android 15 a15/0022 (ReturnIfNullPatch on
 #     AudioService.anonymizeAudioDeviceAttributesUnchecked); on Android 16+ a16/0015 (ReturnParamPatch on
 #     PlatformCompat.fixTargetSdk);
 #   * com.android.tethering: 0004 (ReturnVoidPatch) and 0005 (NetworkSpecifierPatch), the module
@@ -157,6 +157,8 @@ add_helper() {
     local jar=$1 outdir=$2 name=$3 n
     [ -s "$HB/$name/classes.dex" ] || { echo "no helper $name" >&2; return 1; }
     n=$(unzip -Z1 "$jar" | grep -c '^classes[0-9]*\.dex$')
+    # A second helper in the same jar (services.jar: WsaWebView and WsaCascade) goes after the one already added.
+    while [ -e "$outdir/classes$((n + 1)).dex" ] && ! unzip -Z1 "$jar" | grep -qx "classes$((n + 1)).dex"; do n=$((n + 1)); done
     mkdir -p "$outdir"; cp "$HB/$name/classes.dex" "$outdir/classes$((n + 1)).dex"
     echo "   helper com.wsa.gsi.$name → $(basename "$jar") classes$((n + 1)).dex"
 }
@@ -214,7 +216,7 @@ fi
 repack_zip "$S/framework/framework.jar" "$FW/framework.jar" "$FW/dex"
 cp "$FW/framework.jar" "$S/framework/framework.jar"
 
-step "services.jar: 0026 (window geometry as on Microsoft's WSA), a15/0014 (WebView when the default provider is missing)$([ "$VER" = 15 ] && echo ', a15/0022 (AudioService null check)')$([ "$VER" -ge 16 ] && echo ', a16/0015 (uid system keeps the lowest targetSdk)')"
+step "services.jar: 0026+0027 (window geometry and cascade as on Microsoft's WSA), a15/0014 (WebView when the default provider is missing)$([ "$VER" = 15 ] && echo ', a15/0022 (AudioService null check)')$([ "$VER" -ge 16 ] && echo ', a16/0015 (uid system keeps the lowest targetSdk)')"
 SV="$WORK/svc"; rm -rf "${SV:?}"; mkdir -p "$SV"
 if [ "$VER" -ge 15 ]; then   # a15/0014: Android 14 still takes any valid WebView provider
     dexpatch_jar "$S/framework/services.jar" "$SV/dex" WebViewFallbackPatch
@@ -234,6 +236,9 @@ for r in "1064 1280" "600 720" "412 480" "732 720"; do
 done
 dexpatch_jar "$S/framework/services.jar" "$SV/dex" InvokeRenamePatch 'Lcom/android/server/wm/LaunchParamsUtil;' getDefaultFreeformSize 'Ljava/lang/Math;' min max 1
 dexpatch_jar "$S/framework/services.jar" "$SV/dex" ConstReplacePatch 'Lcom/android/server/wm/TaskLaunchParamsModifier;' resolveOrientation/3 1 0
+# 0027: a window launched from Windows cascades 75 dp from the topmost freeform window (helper WsaCascade).
+dexpatch_jar "$S/framework/services.jar" "$SV/dex" InvokeToStaticPatch 'Lcom/android/server/wm/TaskLaunchParamsModifier;' calculate getTaskBounds 'Lcom/wsa/gsi/WsaCascade;' getTaskBounds
+add_helper "$S/framework/services.jar" "$SV/dex" WsaCascade
 repack_zip "$S/framework/services.jar" "$SV/services.jar" "$SV/dex"
 cp "$SV/services.jar" "$S/framework/services.jar"
 

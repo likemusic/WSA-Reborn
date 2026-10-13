@@ -1,0 +1,22 @@
+New freeform windows launched from Windows (wsa://, Start menu) cascade 75 dp from the topmost visible freeform window, as on Microsoft's WSA (13.10.2026, owner: "no holes"). AOSP cascades only from a source activity; without one it centres the window and shifts it off the existing ones by 1/16 of the screen (+254,+194 px on a 2560x1600 display, Microsoft: +94,+94 px = 75 dp). Generated with diff -u from android-14.0.0_r75; android-15 has the same lines, android-16+ — see 0027-window-cascade-from-top-a16.diff (only the line above the block differs).
+
+--- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
++++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+@@ -390,6 +390,17 @@
+                 // Set bounds to be not very far from source activity.
+                 cascadeBounds(source.getConfiguration().windowConfiguration.getBounds(),
+                         taskDisplayArea, outParams.mBounds);
++            } else if (resolvedMode == WINDOWING_MODE_FREEFORM && outParams.mBounds.isEmpty()
++                    && !hasInitialBounds) {
++                // WSA: a window launched from Windows (wsa://, Start menu) has no source activity;
++                // cascade it from the topmost visible freeform task, as Microsoft's
++                // WsaLaunchParamsModifier does, instead of centring it and shifting it away from
++                // the existing windows by 1/16 of the screen.
++                final Task top = taskDisplayArea.getRootTask(t -> t != task
++                        && t.inFreeformWindowingMode() && t.isVisible());
++                if (top != null) {
++                    cascadeBounds(top.getBounds(), taskDisplayArea, outParams.mBounds);
++                }
+             }
+             getTaskBounds(root, taskDisplayArea, layout, resolvedMode, hasInitialBounds,
+                     outParams.mBounds);

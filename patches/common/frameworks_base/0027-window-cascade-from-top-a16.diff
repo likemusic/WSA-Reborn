@@ -1,0 +1,22 @@
+0027 for Android 16 and later (the block sits under "else if (task == null || !task.hasOverrideBounds())"). Generated with diff -u from android-16.0.0_r1; see 0027-window-cascade-from-top.diff.
+
+--- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
++++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+@@ -392,6 +392,17 @@
+                 // Set bounds to be not very far from source activity.
+                 cascadeBounds(source.getConfiguration().windowConfiguration.getBounds(),
+                         taskDisplayArea, outParams.mBounds);
++            } else if (resolvedMode == WINDOWING_MODE_FREEFORM && outParams.mBounds.isEmpty()
++                    && !hasInitialBounds) {
++                // WSA: a window launched from Windows (wsa://, Start menu) has no source activity;
++                // cascade it from the topmost visible freeform task, as Microsoft's
++                // WsaLaunchParamsModifier does, instead of centring it and shifting it away from
++                // the existing windows by 1/16 of the screen.
++                final Task top = taskDisplayArea.getRootTask(t -> t != task
++                        && t.inFreeformWindowingMode() && t.isVisible());
++                if (top != null) {
++                    cascadeBounds(top.getBounds(), taskDisplayArea, outParams.mBounds);
++                }
+             }
+             getTaskBounds(root, taskDisplayArea, layout, resolvedMode, hasInitialBounds,
+                     outParams.mBounds);
