@@ -31,6 +31,20 @@ FILES=(userdata.2.vhdx metadata.2.vhdx)
 
 pool_dir() { echo "$POOL_ROOT/$1"; }
 
+# Copy of a multi-GB vhdx between C: and F:/G:. Under load drvfs fails such copies now and then with "Cannot allocate
+# memory" (13.10.2026 three times in a row, the live userdata was left half-written), so a failed cp is redone by
+# Windows itself (Copy-Item), and the result is checked by MD5 on the Windows side — cmp over drvfs takes minutes.
+copy_vhdx() {   # <src> <dst>
+    local src=$1 dst=$2 a b
+    cp -f "$src" "$dst" 2>/dev/null || {
+        echo "   cp over drvfs failed, copying through Windows"
+        powershell.exe -NoProfile -Command "Copy-Item -Force '$(wslpath -w "$src")' '$(wslpath -w "$dst")'" >/dev/null
+    }
+    a=$(powershell.exe -NoProfile -Command "(Get-FileHash -Algorithm MD5 '$(wslpath -w "$src")').Hash" | tr -d '\r')
+    b=$(powershell.exe -NoProfile -Command "(Get-FileHash -Algorithm MD5 '$(wslpath -w "$dst")').Hash" | tr -d '\r')
+    [ -n "$a" ] && [ "$a" = "$b" ] || { echo "copy $src -> $dst does not match (md5 '$a' vs '$b')" >&2; exit 1; }
+}
+
 # The pool's apps on the Windows side — "Programs and Features" entries and Start menu shortcuts (the registry is one for
 # all pools, otherwise the list shows "ghosts" of another pool, WSABuilds#664). Stored in <pool>/windows-apps.
 host_apps() {
@@ -87,7 +101,7 @@ cmd_save() {
     stop_wsa
     for f in "${FILES[@]}"; do
         echo "-- saving $f -> $dst/$f"
-        cp -f "$DATA_DIR/$f" "$dst/$f"
+        copy_vhdx "$DATA_DIR/$f" "$dst/$f"
     done
     host_apps_save "$pool"
     echo "Pool '$pool' updated with the current state of the live /data."
@@ -102,7 +116,7 @@ cmd_restore() {
     stop_wsa
     for f in "${FILES[@]}"; do
         echo "-- restoring $src/$f -> $DATA_DIR/$f"
-        cp -f "$src/$f" "$DATA_DIR/$f"
+        copy_vhdx "$src/$f" "$DATA_DIR/$f"
     done
     host_apps_restore "$pool"
     echo "Done. Start WSA manually — this script does not start it."
@@ -118,7 +132,7 @@ cmd_fresh() {
     stop_wsa
     for t in userdata metadata; do
         echo "-- template $inst/$t.vhdx -> $DATA_DIR/$t.2.vhdx"
-        cp -f "$inst/$t.vhdx" "$DATA_DIR/$t.2.vhdx"
+        copy_vhdx "$inst/$t.vhdx" "$DATA_DIR/$t.2.vhdx"
     done
     echo "Done: the live /data is clean. Start WSA manually — this script does not start it."
 }
@@ -136,14 +150,14 @@ cmd_switch() {
     mkdir -p "$src_dst"
     for f in "${FILES[@]}"; do
         echo "-- saving live $f -> $src_dst/$f (current content, labelled '$from')"
-        cp -f "$DATA_DIR/$f" "$src_dst/$f"
+        copy_vhdx "$DATA_DIR/$f" "$src_dst/$f"
     done
     host_apps_save "$from"
     local from_src
     from_src="$(pool_dir "$to")"
     for f in "${FILES[@]}"; do
         echo "-- bringing up $from_src/$f -> $DATA_DIR/$f"
-        cp -f "$from_src/$f" "$DATA_DIR/$f"
+        copy_vhdx "$from_src/$f" "$DATA_DIR/$f"
     done
     host_apps_restore "$to"
     # Move host logs (logcat, ETW) from C: to the storage drive, otherwise C: fills up within days (29.09.2026).
