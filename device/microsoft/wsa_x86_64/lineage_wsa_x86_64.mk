@@ -4,6 +4,16 @@
 # which is exactly what we need. There is exactly one difference, but an important one: GSI puts product and
 # system_ext inside system.img, while WSA mounts them as separate disks.
 
+# Overlays that must outrank vendor/lineage/overlay: overlays listed first win, and inherit-product appends the
+# inherited product's list where it is called, so this goes before it. 13.10.2026 — desktop mode, see the file.
+# Only from SDK 36 (LineageOS 23.2+, which turns it on): Android 13 has no such resource, and an overlay of a
+# missing resource fails the build. PLATFORM_SDK_VERSION is set by the time the product is parsed (see device.mk).
+ifneq ($(PLATFORM_SDK_VERSION),)
+ifeq ($(call math_gt_or_eq,$(PLATFORM_SDK_VERSION),36),true)
+PRODUCT_PACKAGE_OVERLAYS += device/microsoft/wsa_x86_64/overlay-lineage
+endif
+endif
+
 $(call inherit-product, vendor/lineage/build/target/product/lineage_gsi_x86_64.mk)
 $(call inherit-product, device/microsoft/wsa_x86_64/device.mk)
 

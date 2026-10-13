@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 13.10.2026: LineageOS 23.2 and 24.0 turn desktop mode on in their common overlay
+         (vendor/lineage/overlay/common, config_isDesktopModeSupported=true; 22.2 does not). With it Android 16/17
+         keeps DefaultTaskDisplayArea in fullscreen and freeform tasks only exist inside a desktop session that WSA
+         never starts: every wsa:// window opened full screen (2560x1600) instead of 1280x720 dp. WSA's
+         windowing is plain freeform, as on stock and on the vanilla AOSP slots, where the AOSP default is false.
+         Verified live on lineage24 with this value patched into the slot's product RRO: freeform task, window
+         1618x947 as on aosp17-vanilla. Must outrank vendor/lineage, hence its own directory listed before the
+         inherit-product lines of lineage_wsa_x86_64.mk (in a list of overlays the first one wins). -->
+    <bool name="config_isDesktopModeSupported">false</bool>
+</resources>
