@@ -226,7 +226,7 @@ index 000000000..df067dd28
 +++ b/packages/SystemUI/src/com/android/systemui/toast/WsaToastForwarder.java
 @@ -0,0 +1,137 @@
 +/*
-+ * Copyright (C) 2026 The wsa-lineage project
++ * Copyright (C) 2026 The WSA-Reborn Authors
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
