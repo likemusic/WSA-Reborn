@@ -26,6 +26,11 @@ PRODUCT_COPY_FILES += \
 PRODUCT_COPY_FILES += \
     device/microsoft/wsa_x86_64/default-permissions/default-permissions-wsa-talkback.xml:$(TARGET_COPY_OUT_SYSTEM_EXT)/etc/default-permissions/default-permissions-wsa-talkback.xml
 
+# Google Play services from the GApps Magisk module: "Nearby devices" permissions it never asks for
+# (old GmsCore crashes on BluetoothAdapter.getAddress without BLUETOOTH_CONNECT).
+PRODUCT_COPY_FILES += \
+    device/microsoft/wsa_x86_64/default-permissions/default-permissions-wsa-gms.xml:$(TARGET_COPY_OUT_SYSTEM_EXT)/etc/default-permissions/default-permissions-wsa-gms.xml
+
 # ---- Common to lineage_wsa_x86_64 and aosp_wsa_x86_64 (moved from the lineage target 21.09.2026) ----
 
 # LineageOS (vendor/lineage/config/common.mk) enables

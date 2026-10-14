@@ -1,0 +1,22 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<!--
+    Default "Nearby devices" permissions for Google Play services, when GApps come with the initrd
+    (the Magisk module of WSABuilds/MagiskOnWSA). That module grants BLUETOOTH_* only to TalkBack:
+    its GmsCore (22.21) never asks for them and calls BluetoothAdapter.getAddress unguarded, so on
+    Android 12+ com.google.android.gms.persistent crashes with "getAddress enforce
+    android.permission.BLUETOOTH_CONNECT" (CryptauthDevicesSyncedIntentOperation) and the account
+    in Play stays without its avatar. Seen on A16 and aosp17-gsi on a clean /data, fixed there by
+    pm grant (14.10.2026).
+
+    Bound to Google's GmsCore certificate; without GApps the exception matches nothing.
+    Granted on first boot and on every build fingerprint change
+    (PackageManagerService: isPermissionUpgradeNeeded → grantDefaultPermissions).
+-->
+<exceptions>
+    <exception package="com.google.android.gms"
+        sha256-cert-digest="7C:E8:3C:1B:71:F3:D5:72:FE:D0:4C:8D:40:C5:CB:10:FF:75:E6:D8:7D:9D:F6:FB:D5:3F:04:68:C2:90:50:53">
+        <permission name="android.permission.BLUETOOTH_CONNECT" fixed="false"/>
+        <permission name="android.permission.BLUETOOTH_SCAN" fixed="false"/>
+        <permission name="android.permission.BLUETOOTH_ADVERTISE" fixed="false"/>
+    </exception>
+</exceptions>

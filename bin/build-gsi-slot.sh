@@ -374,6 +374,10 @@ if [ "$BRIDGE" = 1 ]; then
     cp "$BRIDGE_APK" "$SE/priv-app/WsaShellBridge/WsaShellBridge.apk"
     cp "$DEV/WsaShellBridge/privapp-permissions-wsashellbridge.xml" "$SE/etc/permissions/WsaShellBridge.xml"
 fi
+# "Nearby devices" for GmsCore of the GApps Magisk module (it never asks for them and crashes without
+# BLUETOOTH_CONNECT; matches nothing without GApps) — device.mk does the same for path B.
+mkdir -p "$SE/etc/default-permissions"
+cp "$DEV/default-permissions/default-permissions-wsa-gms.xml" "$SE/etc/default-permissions/"
 
 # Our own native binary from a build of the SAME Android branch as the GSI: <file> or <image>:<path>.
 our_binary() {
