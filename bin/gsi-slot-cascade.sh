@@ -75,6 +75,15 @@ copyw() {   # <src> <dst>
     local a b; a=$(md5w "$1"); b=$(md5w "$2")
     [ -n "$a" ] && [ "$a" = "$b" ] || { echo "copy $1 -> $2 does not match ($a / $b)" >&2; return 1; }
 }
+# Copies of 1.2 GB onto F:/G: hang over drvfs now and then (13.10.2026: cmp of the backup stood for 30 min while
+# another session wrote to the same drive) — done by Windows itself and checked by MD5 on its side.
+win() { timeout 1200 powershell.exe -NoProfile -Command "$1" | tr -d '\r'; }
+md5w() { win "(Get-FileHash -Algorithm MD5 '$(wslpath -w "$1")').Hash"; }
+copyw() {   # <src> <dst>
+    win "Copy-Item -Force '$(wslpath -w "$1")' '$(wslpath -w "$2")'" >/dev/null
+    local a b; a=$(md5w "$1"); b=$(md5w "$2")
+    [ -n "$a" ] && [ "$a" = "$b" ] || { echo "copy $1 -> $2 does not match ($a / $b)" >&2; return 1; }
+}
 [ -e "$P.pre-cascade" ] || [ -e "$P.pre-0027" ] || copyw "$P" "$P.pre-cascade"
 copyw "$WORK/system.vhdx" "$P.new" && mv -f "$P.new" "$P" && { echo "PUT-OK"; exit 0; }
 rm -f "$P.new"; echo "copy into $P failed — slot file untouched" >&2; exit 1
