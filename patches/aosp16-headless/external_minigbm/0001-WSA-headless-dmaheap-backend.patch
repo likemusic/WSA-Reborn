@@ -1,0 +1,461 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Thu, 15 Oct 2026 12:00:00 +0000
+Subject: [PATCH] WSA headless: dmaheap backend for gralloc4 without a GPU node (docs/own-host.md)
+
+---
+diff --git a/Android.bp b/Android.bp
+index d044e7d..af5421d 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -40,6 +40,7 @@ filegroup {
+         "backend_mock.c",
+         "drv.c",
+         "drv_array_helpers.c",
++        "dmaheap.c",
+         "drv_helpers.c",
+         "dumb_driver.c",
+         "i915.c",
+@@ -323,3 +324,16 @@ cc_library_shared {
+     defaults: ["minigbm_cros_gralloc0_defaults"],
+     shared_libs: ["libminigbm_gralloc_arcvm"],
+ }
++
++// No GPU node (software rendering: SwiftShader + ANGLE): linear buffers from /dev/dma_heap/system.
++// Static, with static libc++, so that the allocator and the mapper drop into a vendor partition of
++// an older release (VNDK v33) without extra files.
++cc_library_static {
++    name: "libminigbm_gralloc_dmaheap",
++    defaults: ["minigbm_cros_gralloc_library_defaults"],
++    cflags: [
++        "-DDRV_DMAHEAP",
++        "-DHAS_DMABUF_SYSTEM_HEAP",
++    ],
++    stl: "libc++_static",
++}
+diff --git a/cros_gralloc/cros_gralloc_driver.cc b/cros_gralloc/cros_gralloc_driver.cc
+index cb8b94b..fc694a9 100644
+--- a/cros_gralloc/cros_gralloc_driver.cc
++++ b/cros_gralloc/cros_gralloc_driver.cc
+@@ -148,6 +148,17 @@ static struct driver *init_try_nodes()
+ 			return drv;
+ 	}
+ 
++#ifdef DRV_DMAHEAP
++	// No GPU node at all (software rendering): linear buffers from the system dma-buf heap.
++	int fd = open("/dev/dma_heap/system", O_RDONLY | O_CLOEXEC);
++	if (fd >= 0) {
++		drv = drv_create(fd);
++		if (drv)
++			return drv;
++		close(fd);
++	}
++#endif
++
+ 	return nullptr;
+ }
+ 
+@@ -158,15 +169,23 @@ static void drv_destroy_and_close(struct driver *drv)
+ 	close(fd);
+ }
+ 
+-static bool is_running_with_software_rendering()
++static bool is_running_with_software_rendering(struct driver *drv)
+ {
+ 	const char *vulkan_driver = drv_get_os_option("ro.hardware.vulkan");
+-	return (vulkan_driver != nullptr && strstr(vulkan_driver, "pastel") != nullptr);
++	if (vulkan_driver != nullptr && strstr(vulkan_driver, "pastel") != nullptr)
++		return true;
++#ifdef DRV_DMAHEAP
++	// No GPU node at all: whatever renders is software, whatever the Vulkan driver is called
++	// (WSA keeps the name ranchu for SwiftShader dropped in place of its own driver).
++	if (drv != nullptr && strcmp(drv_get_name(drv), "dmaheap") == 0)
++		return true;
++#endif
++	return false;
+ }
+ 
+ cros_gralloc_driver::cros_gralloc_driver()
+     : drv_(init_try_nodes(), drv_destroy_and_close),
+-      is_running_with_software_rendering_(is_running_with_software_rendering())
++      is_running_with_software_rendering_(is_running_with_software_rendering(drv_.get()))
+ {
+ }
+ 
+diff --git a/cros_gralloc/gralloc4/Android.bp b/cros_gralloc/gralloc4/Android.bp
+index 73588f7..dbf3122 100644
+--- a/cros_gralloc/gralloc4/Android.bp
++++ b/cros_gralloc/gralloc4/Android.bp
+@@ -172,3 +172,26 @@ cc_library_shared {
+         },
+     },
+ }
++
++// No GPU node (software rendering): see libminigbm_gralloc_dmaheap. --exclude-libs keeps the static libc++ (and
++// minigbm) symbols out of the dynamic table: otherwise the shared libc++ that the HIDL libraries pull in binds to our
++// copy at load time and aborts in ios_base::Init with std::bad_cast (checked live 14.10.2026).
++cc_binary {
++    name: "android.hardware.graphics.allocator@4.0-service.minigbm_dmaheap",
++    defaults: ["minigbm_gralloc4_allocator_defaults"],
++    static_libs: ["libminigbm_gralloc_dmaheap"],
++    stl: "libc++_static",
++    ldflags: ["-Wl,--exclude-libs,ALL"],
++    vintf_fragment_modules: ["android.hardware.graphics.allocator@4.0.xml"],
++    init_rc: ["android.hardware.graphics.allocator@4.0-service.minigbm_dmaheap.rc"],
++}
++
++cc_library_shared {
++    name: "android.hardware.graphics.mapper@4.0-impl.minigbm_dmaheap",
++    defaults: ["minigbm_gralloc4_common_defaults"],
++    static_libs: ["libminigbm_gralloc_dmaheap"],
++    stl: "libc++_static",
++    ldflags: ["-Wl,--exclude-libs,ALL"],
++    vintf_fragment_modules: ["android.hardware.graphics.mapper@4.0.xml"],
++    srcs: [":minigbm_gralloc4_mapper_files"],
++}
+diff --git a/cros_gralloc/gralloc4/android.hardware.graphics.allocator@4.0-service.minigbm_dmaheap.rc b/cros_gralloc/gralloc4/android.hardware.graphics.allocator@4.0-service.minigbm_dmaheap.rc
+new file mode 100644
+index 0000000..7751fde
+--- /dev/null
++++ b/cros_gralloc/gralloc4/android.hardware.graphics.allocator@4.0-service.minigbm_dmaheap.rc
+@@ -0,0 +1,24 @@
++#
++# Copyright 2020 The Android Open Source Project
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#      http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++#
++
++service vendor.graphics.allocator-4-0 /vendor/bin/hw/android.hardware.graphics.allocator@4.0-service.minigbm_dmaheap
++    interface android.hardware.graphics.allocator@4.0::IAllocator default
++    class hal animation
++    user system
++    group graphics drmrpc
++    capabilities SYS_NICE
++    onrestart restart surfaceflinger
++    task_profiles ServiceCapacityLow
+diff --git a/dmaheap.c b/dmaheap.c
+new file mode 100644
+index 0000000..70f70e8
+--- /dev/null
++++ b/dmaheap.c
+@@ -0,0 +1,237 @@
++/*
++ * Copyright 2026 The WSA-Reborn Authors. All rights reserved.
++ * Use of this source code is governed by a BSD-style license that can be
++ * found in the LICENSE file.
++ */
++
++/*
++ * Backend without a DRM device: linear buffers from the dma-buf system heap
++ * (/dev/dma_heap/system), for guests with software rendering only (SwiftShader
++ * + ANGLE) and no GPU node at all. There are no GEM handles here, so a buffer
++ * is identified by the inode of its dma-buf, which is unique in the kernel and
++ * the same in every process that imports the buffer.
++ */
++
++#ifdef DRV_DMAHEAP
++
++#include <errno.h>
++#include <fcntl.h>
++#include <linux/dma-buf.h>
++#include <linux/dma-heap.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include "drv_helpers.h"
++#include "drv_priv.h"
++#include "util.h"
++
++#define DMAHEAP_STRIDE_ALIGN 64
++
++struct dmaheap_bo {
++	int fd;
++};
++
++static const uint32_t render_formats[] = {
++	DRM_FORMAT_ARGB8888,	 DRM_FORMAT_XRGB8888,	   DRM_FORMAT_ABGR8888,
++	DRM_FORMAT_XBGR8888,	 DRM_FORMAT_BGR888,	   DRM_FORMAT_RGB565,
++	DRM_FORMAT_ABGR2101010, DRM_FORMAT_ABGR16161616F,
++};
++
++static const uint32_t texture_formats[] = {
++	DRM_FORMAT_R8,	 DRM_FORMAT_R16,    DRM_FORMAT_GR88,	       DRM_FORMAT_NV12,
++	DRM_FORMAT_NV21, DRM_FORMAT_YVU420, DRM_FORMAT_YVU420_ANDROID, DRM_FORMAT_P010,
++};
++
++static int dmaheap_init(struct driver *drv)
++{
++	drv_add_combinations(drv, render_formats, ARRAY_SIZE(render_formats), &LINEAR_METADATA,
++			     BO_USE_RENDER_MASK | BO_USE_SCANOUT);
++	drv_add_combinations(drv, texture_formats, ARRAY_SIZE(texture_formats), &LINEAR_METADATA,
++			     BO_USE_TEXTURE_MASK);
++	/* Blobs (AHARDWAREBUFFER_FORMAT_BLOB) and video/camera buffers are R8 / NV12. */
++	drv_modify_combination(drv, DRM_FORMAT_R8, &LINEAR_METADATA,
++			       BO_USE_HW_VIDEO_ENCODER | BO_USE_HW_VIDEO_DECODER |
++				   BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE |
++				   BO_USE_GPU_DATA_BUFFER | BO_USE_SENSOR_DIRECT_DATA);
++	drv_modify_combination(drv, DRM_FORMAT_NV12, &LINEAR_METADATA,
++			       BO_USE_HW_VIDEO_ENCODER | BO_USE_HW_VIDEO_DECODER |
++				   BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE);
++	return drv_modify_linear_combinations(drv);
++}
++
++static int dmaheap_fd_ino(int fd, uint32_t *ino)
++{
++	struct stat st;
++	if (fstat(fd, &st))
++		return -errno;
++	*ino = (uint32_t)st.st_ino;
++	return 0;
++}
++
++static int dmaheap_attach(struct bo *bo, int fd)
++{
++	struct dmaheap_bo *priv;
++	int ret = dmaheap_fd_ino(fd, &bo->handle.u32);
++	if (ret)
++		return ret;
++	priv = calloc(1, sizeof(*priv));
++	if (!priv)
++		return -ENOMEM;
++	priv->fd = fd;
++	bo->priv = priv;
++	return 0;
++}
++
++static int dmaheap_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t format,
++			     uint64_t use_flags)
++{
++	struct dma_heap_allocation_data alloc = { 0 };
++	uint32_t aligned_height = height;
++	uint32_t stride;
++	int ret;
++
++	switch (format) {
++	case DRM_FORMAT_R16:
++		/* HAL_PIXEL_FORMAT_Y16: width aligned to 16 pixels (graphics/common/1.0/types.hal). */
++		width = ALIGN(width, 16);
++		break;
++	case DRM_FORMAT_YVU420_ANDROID:
++		/* HAL_PIXEL_FORMAT_YV12: luma stride aligned so that chroma strides are 16 bytes. */
++		width = ALIGN(width, 32);
++		break;
++	default:
++		break;
++	}
++
++	stride = drv_stride_from_format(format, width, 0);
++	if (format != DRM_FORMAT_YVU420_ANDROID)
++		stride = ALIGN(stride, DMAHEAP_STRIDE_ALIGN);
++
++	ret = drv_bo_from_format(bo, stride, 1, aligned_height, format);
++	if (ret)
++		return ret;
++
++	alloc.len = ALIGN(bo->meta.total_size, (size_t)getpagesize());
++	alloc.fd_flags = O_RDWR | O_CLOEXEC;
++	if (ioctl(bo->drv->fd, DMA_HEAP_IOCTL_ALLOC, &alloc)) {
++		drv_loge("DMA_HEAP_IOCTL_ALLOC (%zu bytes) failed: %s\n", bo->meta.total_size,
++			 strerror(errno));
++		return -errno;
++	}
++	bo->meta.total_size = alloc.len;
++
++	ret = dmaheap_attach(bo, (int)alloc.fd);
++	if (ret)
++		close((int)alloc.fd);
++	return ret;
++}
++
++static int dmaheap_bo_create_with_modifiers(struct bo *bo, uint32_t width, uint32_t height,
++					    uint32_t format, const uint64_t *modifiers,
++					    uint32_t count)
++{
++	if (!drv_has_modifier(modifiers, count, DRM_FORMAT_MOD_LINEAR))
++		return -EINVAL;
++	return dmaheap_bo_create(bo, width, height, format, 0);
++}
++
++static int dmaheap_bo_import(struct bo *bo, struct drv_import_fd_data *data)
++{
++	uint32_t ino, plane_ino;
++	int fd, ret;
++
++	/* One dma-buf per buffer: every plane must point at the same one. */
++	ret = dmaheap_fd_ino(data->fds[0], &ino);
++	if (ret)
++		return ret;
++	for (size_t plane = 1; plane < bo->meta.num_planes; plane++) {
++		ret = dmaheap_fd_ino(data->fds[plane], &plane_ino);
++		if (ret)
++			return ret;
++		if (plane_ino != ino) {
++			drv_loge("planes of one buffer in different dma-bufs are not supported\n");
++			return -EINVAL;
++		}
++	}
++
++	fd = fcntl(data->fds[0], F_DUPFD_CLOEXEC, 0);
++	if (fd < 0)
++		return -errno;
++	ret = dmaheap_attach(bo, fd);
++	if (ret)
++		close(fd);
++	return ret;
++}
++
++static int dmaheap_bo_destroy(struct bo *bo)
++{
++	struct dmaheap_bo *priv = bo->priv;
++	if (priv) {
++		close(priv->fd);
++		free(priv);
++		bo->priv = NULL;
++	}
++	return 0;
++}
++
++static int dmaheap_bo_get_plane_fd(struct bo *bo, size_t plane)
++{
++	struct dmaheap_bo *priv = bo->priv;
++	int fd = fcntl(priv->fd, F_DUPFD_CLOEXEC, 0);
++	return fd < 0 ? -errno : fd;
++}
++
++static void *dmaheap_bo_map(struct bo *bo, struct vma *vma, uint32_t map_flags)
++{
++	struct dmaheap_bo *priv = bo->priv;
++	off_t end = lseek(priv->fd, 0, SEEK_END);
++
++	if (end == (off_t)-1)
++		return MAP_FAILED;
++	vma->length = (size_t)end;
++	return mmap(NULL, vma->length, drv_get_prot(map_flags), MAP_SHARED, priv->fd, 0);
++}
++
++static int dmaheap_sync(struct bo *bo, struct mapping *mapping, uint64_t when)
++{
++	struct dmaheap_bo *priv = bo->priv;
++	struct dma_buf_sync sync = { 0 };
++
++	sync.flags = when | DMA_BUF_SYNC_READ;
++	if (mapping->vma->map_flags & BO_MAP_WRITE)
++		sync.flags |= DMA_BUF_SYNC_WRITE;
++	if (ioctl(priv->fd, DMA_BUF_IOCTL_SYNC, &sync))
++		return -errno;
++	return 0;
++}
++
++static int dmaheap_bo_invalidate(struct bo *bo, struct mapping *mapping)
++{
++	return dmaheap_sync(bo, mapping, DMA_BUF_SYNC_START);
++}
++
++static int dmaheap_bo_flush(struct bo *bo, struct mapping *mapping)
++{
++	return dmaheap_sync(bo, mapping, DMA_BUF_SYNC_END);
++}
++
++const struct backend backend_dmaheap = {
++	.name = "dmaheap",
++	.init = dmaheap_init,
++	.bo_create = dmaheap_bo_create,
++	.bo_create_with_modifiers = dmaheap_bo_create_with_modifiers,
++	.bo_destroy = dmaheap_bo_destroy,
++	.bo_import = dmaheap_bo_import,
++	.bo_get_plane_fd = dmaheap_bo_get_plane_fd,
++	.bo_map = dmaheap_bo_map,
++	.bo_unmap = drv_bo_munmap,
++	.bo_invalidate = dmaheap_bo_invalidate,
++	.bo_flush = dmaheap_bo_flush,
++	.resolve_format_and_use_flags = drv_resolve_format_and_use_flags_helper,
++};
++
++#endif
+diff --git a/drv.c b/drv.c
+index c1f9c4f..cb16e80 100644
+--- a/drv.c
++++ b/drv.c
+@@ -7,6 +7,7 @@
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <inttypes.h>
++#include <limits.h>
+ #include <pthread.h>
+ #include <stdint.h>
+ #include <stdio.h>
+@@ -60,6 +61,23 @@ extern const struct backend backend_udl;
+ extern const struct backend backend_vkms;
+ 
+ extern const struct backend backend_mock;
++#ifdef DRV_DMAHEAP
++extern const struct backend backend_dmaheap;
++
++/* A dma-buf heap device instead of a DRM node: no drmGetVersion() there. */
++static bool drv_fd_is_dma_heap(int fd)
++{
++	char link[64], path[PATH_MAX];
++	ssize_t len;
++
++	snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
++	len = readlink(link, path, sizeof(path) - 1);
++	if (len < 0)
++		return false;
++	path[len] = '\0';
++	return !strncmp(path, "/dev/dma_heap/", strlen("/dev/dma_heap/"));
++}
++#endif
+ 
+ static const struct backend *drv_backend_list[] = {
+ #ifdef DRV_AMDGPU
+@@ -98,6 +116,11 @@ static const struct backend *drv_get_backend(int fd)
+ 	drmVersionPtr drm_version;
+ 	unsigned int i;
+ 
++#ifdef DRV_DMAHEAP
++	if (drv_fd_is_dma_heap(fd))
++		return &backend_dmaheap;
++#endif
++
+ 	drm_version = drmGetVersion(fd);
+ 
+ 	if (!drm_version)
+@@ -680,6 +703,9 @@ int drv_bo_get_plane_fd(struct bo *bo, size_t plane)
+ 	if (bo->is_test_buffer)
+ 		return -EINVAL;
+ 
++	if (bo->drv->backend->bo_get_plane_fd)
++		return bo->drv->backend->bo_get_plane_fd(bo, plane);
++
+ 	ret = drmPrimeHandleToFD(bo->drv->fd, bo->handle.u32, DRM_CLOEXEC | DRM_RDWR, &fd);
+ 
+ 	// Older DRM implementations blocked DRM_RDWR, but gave a read/write mapping anyways
+diff --git a/drv_priv.h b/drv_priv.h
+index 337b58e..abd6b06 100644
+--- a/drv_priv.h
++++ b/drv_priv.h
+@@ -93,6 +93,8 @@ struct backend {
+ 	/* Called on free if this bo is the last object referencing the contained GEM BOs */
+ 	int (*bo_destroy)(struct bo *bo);
+ 	int (*bo_import)(struct bo *bo, struct drv_import_fd_data *data);
++	/* Optional: export a plane as a dma-buf fd without PRIME (backends with no DRM device). */
++	int (*bo_get_plane_fd)(struct bo *bo, size_t plane);
+ 	void *(*bo_map)(struct bo *bo, struct vma *vma, uint32_t map_flags);
+ 	int (*bo_unmap)(struct bo *bo, struct vma *vma);
+ 	int (*bo_invalidate)(struct bo *bo, struct mapping *mapping);
+-- 
+2.43.0

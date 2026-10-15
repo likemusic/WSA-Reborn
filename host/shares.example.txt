@@ -1,0 +1,13 @@
+# Example shares.txt for wsa-reborn-host.exe (see AddShares() in wsa-reborn-host.cpp): tag, kind, Windows path or size in MB.
+# Nothing is expanded (no %VARIABLES%): write full paths; <host folder> below stands for the folder of the exe.
+dll C:\WSA\wsldevicehost.dll
+# client separate   — the elevated process only runs the VM; RCM, windows, toasts, clipboard and files are served by
+#                     "wsa-reborn-host.exe --client" started in the same folder without elevation (as WsaService/WsaClient);
+#                     the client also hosts the virtio-fs device host (wsldevicehost.dll of the "dll" line)
+# devicehost service — keep the device host in the elevated process instead (does not work under the LocalSystem service)
+shared_mem sections 256
+shared_tmp files <host folder>\share\shared_tmp
+shared_anr files <host folder>\share\shared_anr
+shared_tombstone files <host folder>\share\shared_tombstone
+# nic <HCN network id> <ip>/<prefix> <gateway>   — e.g. "Default Switch"; ids differ per machine (Default Switch is c08cb7b8-… everywhere), "wsa-reborn-host.exe --networks" lists them;
+#     the address is moved into the network's current subnet (ICS subnets change across reboots), gateway taken from HCN

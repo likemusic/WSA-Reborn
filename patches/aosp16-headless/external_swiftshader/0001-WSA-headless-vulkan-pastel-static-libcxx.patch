@@ -1,0 +1,29 @@
+From 98387fad74edab14b27159315b4b6d61016b0014 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Mon, 12 Oct 2026 17:18:49 +0000
+Subject: [PATCH] vulkan.pastel: static libc++ (WSA: vendor libc++ from VNDK
+ v33)
+
+Change-Id: Iea7857a61185edbeb83decc9368cf62ce700c972
+---
+ src/Android.bp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/Android.bp b/src/Android.bp
+index 3d56a27d..2d1d5c1a 100644
+--- a/src/Android.bp
++++ b/src/Android.bp
+@@ -265,6 +265,10 @@ cc_defaults {
+ cc_library_shared {
+     name: "vulkan.pastel",
+ 
++    // WSA: static libc++ — the frozen Microsoft vendor carries libc++ from VNDK v33 (Android 13), which lacks
++    // symbols of the A16 libc++ (basic_stringstream vtable); dlopen in the sphal namespace fails otherwise.
++    stl: "libc++_static",
++
+     static_libs: [
+         "libswiftshadervk_llvm",
+         "libLLVM16_swiftshader",
+-- 
+2.43.0
+

@@ -1,0 +1,21 @@
+// Headless HWC2 module for WSA without a host GPU (the own host, docs/own-host.md): dropped in place of
+// /vendor/lib64/hw/hwcomposer.windows.so, loaded by Microsoft's hwcomposer-service.windows. Static libc++ and
+// --exclude-libs, as for the minigbm dmaheap gralloc: the vendor partition is frozen at VNDK v33.
+cc_library_shared {
+    name: "hwcomposer.wsa_headless",
+    vendor: true,
+    relative_install_path: "hw",
+    srcs: ["headless_hwc.cpp"],
+    header_libs: ["libhardware_headers"],
+    shared_libs: [
+        "libcutils",
+        "liblog",
+    ],
+    stl: "libc++_static",
+    ldflags: ["-Wl,--exclude-libs,ALL"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wno-unused-parameter",
+    ],
+}

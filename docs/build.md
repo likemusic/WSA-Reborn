@@ -97,6 +97,8 @@ git config --global user.name  >/dev/null || git config --global user.name  "bui
 
 It runs `git am` in each patched project on a new branch `wsa-<target>` and stops at the first conflict.
 
+`aosp16-headless` is an extra series applied on top of `aosp16` only for the experimental own host: the guest graphics parts without a GPU (`external/minigbm`, `external/swiftshader`) — see [own-host.md](own-host.md).
+
 What the patches do and on which versions each one is needed is described in the commit messages; the main ones are SCSI addressing for WSA's fstab in `fs_mgr`/first-stage init, SurfaceFlinger layer metadata for host windows, the host-drawn window decor, Ethernet/`NetworkCapabilities` relaxations for Microsoft's `SystemApp`, compatibility shims for `SystemApp` (`AppOpsManager`, `InputManager`, `PlatformCompat`), `Toast` and clipboard forwarding in SystemUI, and `WsaDisplayAreaPolicyProvider` (a new file, included in the `frameworks_base` patch).
 
 ### Android 17

@@ -1,0 +1,11 @@
+# Example settings.txt for wsa-reborn-host.exe (next to the exe; see ReadSettings() in wsa-reborn-host.cpp) — the
+# subsystem's resources mode and memory, as WSA's "Advanced settings" → "Memory and performance".
+# lifecycle continuous|asneeded|partial — default by the machine's memory: under 16 GB asneeded, else partial;
+#     "wsa-reborn-host.exe --lifecycle <mode>" writes this line and sets/removes the start at sign-in
+lifecycle asneeded
+# idle <minutes> — no app window this long: asneeded stops the VM, partial restarts it (WSA: 10)
+idle 10
+# memory <GB>|default — the VM's memory (default: 6 GB from 12 GB of RAM); without the line config.json's SizeInMB stays
+# memory default
+# clipboard on|off — the shared clipboard with Windows (off by default; the command port's "clip on|off" overrides it)
+# clipboard on
