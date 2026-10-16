@@ -673,6 +673,147 @@ struct AsSelf
     ~AsSelf() { if (was) ImpersonateLoggedOnUser(g_userToken); }
 };
 
+// ---- HDV: own PCI devices (Hyper-V Device Virtualization, hypervdevicevirtualization.h of the SDK) ------------
+// The documented way for a host process to emulate a PCI device in its own VM: HdvInitializeDeviceHost on the
+// compute system, HdvCreateDeviceInstance with config-space and BAR callbacks, then the device is added as
+// VirtualMachine/Devices/FlexibleIov/<instance> with EmulatorId = the device's class id. This is the base for an own
+// virtio-gpu (the one WSA has lives in WsaClient.exe). shares.txt line "hdv test": a test device 1af4:10f0-like
+// (vendor 0x1414 Microsoft is avoided — vendor 0x1234, device 0x5753, class ff), BAR0 4 KiB of registers:
+//   0x00 magic 0x57534121 ("!ASW"), 0x04 number of writes, 0x08 scratch (reads back the last write),
+//   0x10/0x14 guest physical address (low/high), 0x18 write <n>: the host reads n (<= 256) bytes of guest memory there
+//   with HdvReadGuestMemory and through HdvCreateGuestMemoryAperture, logs both and compares them; 0x100 + i reads
+//   byte i..i+3 of what HdvReadGuestMemory returned, 0x1c reads 1 if both ways gave the same bytes.
+// 16.10.2026.
+#include <hypervdevicevirtualization.h>
+#pragma comment(lib, "vmdevicehost.lib")
+
+static HDV_HOST g_hdvHost = nullptr;
+static std::string g_hdvModel = "External";  // "hdv test [<HostingModel>]"
+static const GUID kHdvTestClass = {0x7c1e5b2a, 0x9d43, 0x4f1e, {0x8a, 0x52, 0x3b, 0x6d, 0x91, 0x0e, 0x57, 0x53}};
+static const GUID kHdvTestInstance = {0x7c1e5b2b, 0x9d43, 0x4f1e, {0x8a, 0x52, 0x3b, 0x6d, 0x91, 0x0e, 0x57, 0x53}};
+
+struct HdvTestDevice
+{
+    HDV_DEVICE handle = nullptr;
+    UINT32 cfg[64] = {};  // config space as the guest wrote it (BARs are kept by HDV itself, see the log)
+    std::atomic<UINT32> writes{0};
+    UINT32 scratch = 0;
+    UINT64 gpa = 0;
+    BYTE dma[256] = {};
+    UINT32 dmaSame = 0;
+};
+static HdvTestDevice g_hdvTest;
+
+static HRESULT CALLBACK HdvTestInitialize(PVOID) { std::printf("hdv test: Initialize\n"); return S_OK; }
+static void CALLBACK HdvTestTeardown(PVOID) { std::printf("hdv test: Teardown\n"); }
+static HRESULT CALLBACK HdvTestSetConfiguration(PVOID, UINT32 n, const LPCWSTR* v)
+{
+    std::printf("hdv test: SetConfiguration %u values\n", n);
+    for (UINT32 i = 0; i < n; i++) std::printf("  %ls\n", v[i]);
+    return S_OK;
+}
+static HRESULT CALLBACK HdvTestGetDetails(PVOID, PHDV_PCI_PNP_ID id, UINT32 count, UINT32* bars)
+{
+    std::printf("hdv test: GetDetails (%u bars)\n", count);
+    *id = {};
+    id->VendorID = 0x1234;
+    id->DeviceID = 0x5753;
+    id->BaseClass = 0xff;
+    id->SubVendorID = 0x1234;
+    id->SubSystemID = 0x5753;
+    for (UINT32 i = 0; i < count; i++) bars[i] = 0;
+    if (count > 0) bars[0] = 0xFFFFF000;  // 4 KiB, 32-bit memory, not prefetchable
+    return S_OK;
+}
+static HRESULT CALLBACK HdvTestStart(PVOID) { std::printf("hdv test: Start\n"); return S_OK; }
+static void CALLBACK HdvTestStop(PVOID) { std::printf("hdv test: Stop\n"); }
+static HRESULT CALLBACK HdvTestReadConfig(PVOID, UINT32 offset, UINT32* value)
+{
+    *value = offset < sizeof g_hdvTest.cfg ? g_hdvTest.cfg[offset / 4] : 0;
+    std::printf("hdv test: config read 0x%03x -> 0x%08x\n", offset, *value);
+    return S_OK;
+}
+static HRESULT CALLBACK HdvTestWriteConfig(PVOID, UINT32 offset, UINT32 value)
+{
+    std::printf("hdv test: config write 0x%03x <- 0x%08x\n", offset, value);
+    if (offset < sizeof g_hdvTest.cfg) g_hdvTest.cfg[offset / 4] = value;
+    return S_OK;
+}
+static HRESULT CALLBACK HdvTestReadMmio(PVOID, HDV_PCI_BAR_SELECTOR bar, UINT64 offset, UINT64 length, BYTE* value)
+{
+    UINT32 v = 0;
+    if (offset == 0) v = 0x57534121;
+    else if (offset == 4) v = g_hdvTest.writes;
+    else if (offset == 8) v = g_hdvTest.scratch;
+    else if (offset == 0x1c) v = g_hdvTest.dmaSame;
+    else if (offset >= 0x100 && offset + 4 <= 0x100 + sizeof g_hdvTest.dma) std::memcpy(&v, g_hdvTest.dma + (offset - 0x100), 4);
+    std::memset(value, 0, (size_t)length);
+    std::memcpy(value, &v, (size_t)std::min<UINT64>(length, 4));
+    std::printf("hdv test: read bar%d+0x%llx (%llu) -> 0x%08x\n", (int)bar, offset, length, v);
+    return S_OK;
+}
+static HRESULT CALLBACK HdvTestWriteMmio(PVOID, HDV_PCI_BAR_SELECTOR bar, UINT64 offset, UINT64 length, const BYTE* value)
+{
+    UINT32 v = 0;
+    std::memcpy(&v, value, (size_t)std::min<UINT64>(length, 4));
+    g_hdvTest.writes++;
+    if (offset == 8) g_hdvTest.scratch = v;
+    else if (offset == 0x10) g_hdvTest.gpa = (g_hdvTest.gpa & ~0xffffffffULL) | v;
+    else if (offset == 0x14) g_hdvTest.gpa = (g_hdvTest.gpa & 0xffffffffULL) | (UINT64)v << 32;
+    else if (offset == 0x18)
+    {
+        UINT32 n = std::min<UINT32>(v, sizeof g_hdvTest.dma);
+        std::memset(g_hdvTest.dma, 0, sizeof g_hdvTest.dma);
+        HRESULT hr = HdvReadGuestMemory(g_hdvTest.handle, g_hdvTest.gpa, n, g_hdvTest.dma);
+        std::string text;
+        for (UINT32 i = 0; i < n; i++) text += g_hdvTest.dma[i] >= 32 && g_hdvTest.dma[i] < 127 ? (char)g_hdvTest.dma[i] : '.';
+        std::printf("hdv test: HdvReadGuestMemory 0x%llx %u: 0x%08lx \"%s\"\n", g_hdvTest.gpa, n, hr, text.c_str());
+        // An aperture covers whole pages.
+        UINT64 page = g_hdvTest.gpa & ~4095ULL;
+        UINT32 span = (UINT32)(((g_hdvTest.gpa + n + 4095) & ~4095ULL) - page);
+        PVOID mapped = nullptr;
+        HRESULT ha = HdvCreateGuestMemoryAperture(g_hdvTest.handle, page, span, TRUE, &mapped);
+        g_hdvTest.dmaSame = SUCCEEDED(hr) && SUCCEEDED(ha) && std::memcmp((BYTE*)mapped + (g_hdvTest.gpa - page), g_hdvTest.dma, n) == 0;
+        std::printf("hdv test: HdvCreateGuestMemoryAperture 0x%llx %u: 0x%08lx, same bytes: %u\n", page, span, ha, g_hdvTest.dmaSame);
+        if (SUCCEEDED(ha)) HdvDestroyGuestMemoryAperture(g_hdvTest.handle, mapped);
+    }
+    std::printf("hdv test: write bar%d+0x%llx (%llu) <- 0x%08x\n", (int)bar, offset, length, v);
+    return S_OK;
+}
+
+// Before the VM starts: the device host belongs to the compute system.
+static void HdvInit()
+{
+    std::ifstream f(ConfigFile(L"shares.txt"));
+    bool want = false;
+    for (std::string line; std::getline(f, line);)
+    {
+        std::istringstream in(line);
+        std::string w;
+        if (in >> w && w == "hdv") { want = true; std::string kind, model; if (in >> kind >> model) g_hdvModel = model; }
+    }
+    if (!want) return;
+    HRESULT hr = HdvInitializeDeviceHost(g_system, &g_hdvHost);
+    std::printf("hdv: HdvInitializeDeviceHost: 0x%08lx\n", hr);
+    if (FAILED(hr)) { g_hdvHost = nullptr; return; }
+    static const HDV_PCI_DEVICE_INTERFACE iface = {HdvPciDeviceInterfaceVersion1, HdvTestInitialize, HdvTestTeardown, HdvTestSetConfiguration, HdvTestGetDetails, HdvTestStart,
+                                                   HdvTestStop, HdvTestReadConfig, HdvTestWriteConfig, HdvTestReadMmio, HdvTestWriteMmio};
+    hr = HdvCreateDeviceInstance(g_hdvHost, HdvDeviceTypePCI, &kHdvTestClass, &kHdvTestInstance, &iface, &g_hdvTest, &g_hdvTest.handle);
+    std::printf("hdv test: HdvCreateDeviceInstance: 0x%08lx\n", hr);
+}
+
+// After the start: hot-add, as the virtio devices.
+static void HdvAdd()
+{
+    const std::string& model = g_hdvModel;
+    if (!g_hdvTest.handle) return;
+    std::string req = "{\"ResourcePath\":\"VirtualMachine/Devices/FlexibleIov/" + GuidStr(kHdvTestInstance).substr(1, 36) +
+                      "\",\"RequestType\":\"Add\",\"Settings\":{\"EmulatorId\":\"" + GuidStr(kHdvTestClass).substr(1, 36) + "\",\"HostingModel\":\"" + model + "\"}}";
+    HCS_OPERATION op = HcsCreateOperation(nullptr, nullptr);
+    HcsModifyComputeSystem(g_system, op, Widen(req).c_str(), nullptr);
+    Wait(op, ("hdv test: add FlexibleIov, " + model).c_str());
+}
+
 static void AddShares()
 {
     std::ifstream f(ConfigFile(L"shares.txt"));
@@ -687,7 +828,7 @@ static void AddShares()
         std::vector<std::string> w;
         std::string first;
         if (!(in >> first) || first[0] == '#') continue;
-        if (first == "client" || first == "devicehost") continue;  // see ReadSharesSettings
+        if (first == "client" || first == "devicehost" || first == "hdv") continue;  // see ReadSharesSettings; hdv: HdvInit
         if (first == "clsid") { std::string g; in >> g; CLSIDFromString(Widen(g).c_str(), &clsid); continue; }
         if (first == "nic") { std::string n; in >> n; shares.push_back({"nic", "nic", n}); continue; }  // address: ResolveNic
         if (first == "device") { std::string c, e, t; in >> c >> e >> t; shares.push_back({t, "device", c, e}); continue; }
@@ -4281,11 +4422,13 @@ static int RunVm(const wchar_t* config, unsigned short port, std::string log)
     else
         GuestSide(port);
 
+    HdvInit();
     op = HcsCreateOperation(nullptr, nullptr);
     HcsStartComputeSystem(g_system, op, nullptr);
     if (FAILED(Wait(op, "start"))) return 1;
     // Like WslCoreVm::InitializeGuest: virtio devices are hot-added to the running VM.
     AddShares();
+    HdvAdd();
     std::printf("console -> %s, init protocol -> init.log; Ctrl+C to stop\n", log.c_str());
     Relay(runtimeId, port);
     return 0;
