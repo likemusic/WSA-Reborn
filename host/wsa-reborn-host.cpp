@@ -4001,6 +4001,40 @@ static bool IsTaskWindow(HWND w) { return GetPropW(w, L"WsaTask") != nullptr; }
 static int WindowTask(HWND w) { return IsTaskWindow(w) ? (int)GetWindowLongPtrW(w, GWLP_USERDATA) : -1; }
 static int TargetTask(HWND w) { int t = WindowTask(w); return t > 0 ? t : -1; }
 
+// Where a w x h picture goes in a window's client area: the largest rect of its proportions, centred, with bars on two
+// sides — a resized window no longer squeezes the picture (16.10.2026, two instances side by side).
+static RECT FitRect(const RECT& rc, unsigned w, unsigned h)
+{
+    RECT r = rc;
+    if (!w || !h || rc.right <= 0 || rc.bottom <= 0) return r;
+    if ((long long)rc.right * h > (long long)rc.bottom * w)
+    {
+        LONG dw = (LONG)((long long)rc.bottom * w / h);
+        r.left = (rc.right - dw) / 2, r.right = r.left + dw;
+    }
+    else
+    {
+        LONG dh = (LONG)((long long)rc.right * h / w);
+        r.top = (rc.bottom - dh) / 2, r.bottom = r.top + dh;
+    }
+    return r;
+}
+
+// Client point -> picture px of a w x h picture fitted by FitRect; a point on a bar goes to the picture's nearest edge.
+static void FromFit(const RECT& rc, unsigned w, unsigned h, int cx, int cy, float& x, float& y)
+{
+    RECT f = FitRect(rc, w, h);
+    x = std::clamp((cx - f.left + 0.5f) * w / (std::max)(1L, f.right - f.left), 0.0f, w - 0.5f);
+    y = std::clamp((cy - f.top + 0.5f) * h / (std::max)(1L, f.bottom - f.top), 0.0f, h - 0.5f);
+}
+
+// Picture px -> client point, the inverse of FromFit (the command port's clicks).
+static LPARAM ToFit(const RECT& rc, unsigned w, unsigned h, float x, float y)
+{
+    RECT f = FitRect(rc, w, h);
+    return MAKELPARAM((int)(f.left + x * (f.right - f.left) / (std::max)(1u, w)), (int)(f.top + y * (f.bottom - f.top) / (std::max)(1u, h)));
+}
+
 // Client point of the display window or of a task window -> guest display px; false while there is nothing to map to.
 static bool GuestPoint(HWND w, int cx, int cy, float& x, float& y)
 {
@@ -4013,13 +4047,12 @@ static bool GuestPoint(HWND w, int cx, int cy, float& x, float& y)
     {
         auto it = g_tasks.find(task);
         if (it == g_tasks.end() || !it->second.w || !it->second.h) return false;
-        x = it->second.x + (cx + 0.5f) * it->second.w / rc.right;
-        y = it->second.y + (cy + 0.5f) * it->second.h / rc.bottom;
+        FromFit(rc, it->second.w, it->second.h, cx, cy, x, y);
+        x += it->second.x, y += it->second.y;
         return true;
     }
     if (!g_frameW || !g_frameH) return false;
-    x = (cx + 0.5f) * g_frameW / rc.right;
-    y = (cy + 0.5f) * g_frameH / rc.bottom;
+    FromFit(rc, g_frameW, g_frameH, cx, cy, x, y);
     return true;
 }
 
@@ -4108,8 +4141,13 @@ static void PaintBgrx(HDC dc, const RECT& rc, const unsigned char* bits, unsigne
     bi.bmiHeader.biPlanes = 1;
     bi.bmiHeader.biBitCount = 32;
     bi.bmiHeader.biCompression = BI_RGB;
+    RECT f = FitRect(rc, w, h);
+    HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    RECT bars[] = {{0, 0, rc.right, f.top}, {0, f.bottom, rc.right, rc.bottom}, {0, f.top, f.left, f.bottom}, {f.right, f.top, rc.right, f.bottom}};
+    for (const RECT& b : bars)
+        if (b.right > b.left && b.bottom > b.top) FillRect(dc, &b, black);
     SetStretchBltMode(dc, HALFTONE);
-    StretchDIBits(dc, 0, 0, rc.right, rc.bottom, 0, 0, w, h, bits, &bi, DIB_RGB_COLORS, SRCCOPY);
+    StretchDIBits(dc, f.left, f.top, f.right - f.left, f.bottom - f.top, 0, 0, w, h, bits, &bi, DIB_RGB_COLORS, SRCCOPY);
 }
 
 static LRESULT CALLBACK TaskWndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
@@ -4311,7 +4349,7 @@ static void FrameWindowThread()
     RegisterClassW(&wc);
     RECT r{0, 0, 1280, 800};
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-    g_frameWnd = CreateWindowW(wc.lpszClassName, L"WSA headless (wsa-reborn-host)", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+    g_frameWnd = CreateWindowW(wc.lpszClassName, (g_instance.empty() ? std::wstring(L"WSA headless (wsa-reborn-host)") : L"WSA headless (wsa-reborn-host, " + g_instance + L")").c_str(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                                r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
     SetWindowPos(g_frameWnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     TrayAdd();
@@ -4536,7 +4574,7 @@ static void InputControl(unsigned short port)
             unsigned fw, fh;
             { std::lock_guard<std::mutex> lk(g_frameLock); fw = g_frameW; fh = g_frameH; }
             if (g_frameWnd) GetClientRect(g_frameWnd, &rc);
-            auto client = [&](float gx, float gy) { return MAKELPARAM((int)(gx * rc.right / fw), (int)(gy * rc.bottom / fh)); };
+            auto client = [&](float gx, float gy) { return ToFit(rc, fw, fh, gx, gy); };
             if (cmd == "snap")  // frame.bmp and task-<id>.bmp now, not at the next 10 s tick
             {
                 SaveFrameBmp();
@@ -4686,7 +4724,7 @@ static void InputControl(unsigned short port)
                 else if (!tw || IsIconic(tw) || trc.right <= 0 || !tw_) answer = "error: no window for task " + std::to_string(task);
                 else if (cmd == "tclick" && (in >> x >> y))
                 {
-                    LPARAM p = MAKELPARAM((int)(x * trc.right / tw_), (int)(y * trc.bottom / th_));
+                    LPARAM p = ToFit(trc, tw_, th_, x, y);
                     PostMessageW(tw, WM_LBUTTONDOWN, MK_LBUTTON, p);
                     PostMessageW(tw, WM_LBUTTONUP, 0, p);
                 }
