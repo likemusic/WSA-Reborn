@@ -3,6 +3,12 @@
 dll C:\WSA\wsldevicehost.dll
 # vmid <GUID>         — the compute system id instead of the built-in one (hvsocket listeners are bound to it: a host
 #                        process that cannot be killed keeps the ports of its VM id until a reboot)
+# instance <name>     — a second (third…) own host beside the first, e.g. another Android version: the console pipes, the VM
+#                        marker, the service WsaRebornHost-<name> with %ProgramFiles%/%ProgramData%\WsaReborn-<name>,
+#                        the toast id, the sign-in start and the settings window get "-<name>". Give it its own vmid, port,
+#                        system.vhdx (attached writable), data disks and nic address too. The vmid must be a fresh random
+#                        GUID: two ids one byte apart failed in HCS (0x800700b7 "Construct") while the other VM ran
+# port <n>            — the adb port of this instance (default 58600; the command port is n + 10)
 # client separate   — the elevated process only runs the VM; RCM, windows, toasts, clipboard and files are served by
 #                     "wsa-reborn-host.exe --client" started in the same folder without elevation (as WsaService/WsaClient);
 #                     the client also hosts the virtio-fs device host (wsldevicehost.dll of the "dll" line)

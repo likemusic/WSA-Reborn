@@ -106,6 +106,16 @@ static const wchar_t* kVmId = L"5f3c1a7e-2b4d-4e8a-9c61-0d7b2e4f9a13";
 static std::wstring g_vmIdOverride;
 static const wchar_t* kComPipe = L"\\\\.\\pipe\\wsa-reborn-host-com1";
 static const wchar_t* kHvcPipe = L"\\\\.\\pipe\\wsa-reborn-host-hvc0";
+// Several own hosts side by side (one Android version each, 16.10.2026): shares.txt "instance <name>" (ReadInstance) gives
+// "-<name>" to every name that is one per machine — the console pipes (RunVm renames them in config.json), the VM marker,
+// the service and its folders in Program Files/ProgramData, the toast id, the sign-in start, the settings window — and
+// "port <n>" the instance's adb port (the command port is n + 10). Each instance also needs its own "vmid" (hvsocket
+// listeners and the NIC endpoint follow it), its own system.vhdx and data disks, and its own guest address. The vmid must
+// be a fresh random GUID: ...9b13 and ...9c13 (one byte apart) could not run together — the second VM failed in HCS with
+// 0x800700b7 "Construct" even without any device, while a random GUID ran beside the first.
+static std::wstring g_instance;
+static unsigned short g_port = 58600;
+static std::wstring Inst(const std::wstring& base) { return g_instance.empty() ? base : base + L"-" + g_instance; }
 // adbd in the WSA guest listens on vsock 5555; on Hyper-V that is the service GUID <port>-facb-11e6-bd58-64006a7986d3.
 static const GUID kAdbService = {0x000015b3, 0xfacb, 0x11e6, {0xbd, 0x58, 0x64, 0x00, 0x6a, 0x79, 0x86, 0xd3}};
 static HCS_SYSTEM g_system = nullptr;
@@ -2066,8 +2076,11 @@ static void AddShares()
         AsUser user(impersonate && s[1] != "nic");
         if (s[1] == "nic")
         {
-            // A fixed endpoint id: the endpoint of the previous run (killed process) is deleted first.
-            static const GUID kEndpoint = {0x5f3c1a7e, 0x2b4d, 0x4e8a, {0x9c, 0x61, 0x0d, 0x7b, 0x2e, 0x4f, 0x9a, 0x14}};
+            // A fixed endpoint id per VM id (the VM id + 1 in the last byte: ...9a14 for the default ...9a13), so that two
+            // instances do not delete each other's: the endpoint of the previous run (killed process) is deleted first.
+            GUID kEndpoint{};
+            CLSIDFromString((L"{" + std::wstring(kVmId) + L"}").c_str(), &kEndpoint);
+            kEndpoint.Data4[7]++;
             GUID net{};
             CLSIDFromString(Widen("{" + s[2] + "}").c_str(), &net);
             PWSTR err = nullptr;
@@ -3285,7 +3298,7 @@ static void ClipToGuest()
 struct NotifEntry { std::string package, tag; long long id = 0; std::vector<std::pair<std::string, std::string>> actions; };  // (title, inputKey)
 static std::map<std::string, NotifEntry> g_notifs;  // by toast tag, under g_notifLock
 static std::string g_lastToast;                     // tag of the last notification shown, under g_notifLock
-static const wchar_t kToastAumid[] = L"WsaReborn.Host";
+static std::wstring g_toastAumid = L"WsaReborn.Host";  // Inst() of it after ReadInstance
 static winrt::Windows::UI::Notifications::ToastNotifier g_toaster{nullptr};
 
 static void ComThread()
@@ -3300,24 +3313,24 @@ static bool ToastInit()
     if (state) return state > 0;
     ComThread();
     HKEY k;
-    std::wstring key = std::wstring(L"Software\\Classes\\AppUserModelId\\") + kToastAumid;
+    std::wstring key = std::wstring(L"Software\\Classes\\AppUserModelId\\") + g_toastAumid.c_str();
     if (RegCreateKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr) == ERROR_SUCCESS)
     {
-        const wchar_t name[] = L"WSA (own host)";
-        RegSetValueExW(k, L"DisplayName", 0, REG_SZ, (const BYTE*)name, sizeof name);
+        const std::wstring name = g_instance.empty() ? L"WSA (own host)" : L"WSA (own host, " + g_instance + L")";
+        RegSetValueExW(k, L"DisplayName", 0, REG_SZ, (const BYTE*)name.c_str(), (DWORD)(name.size() + 1) * sizeof(wchar_t));
         RegCloseKey(k);
     }
     try
     {
-        g_toaster = winrt::Windows::UI::Notifications::ToastNotificationManager::CreateToastNotifier(kToastAumid);
+        g_toaster = winrt::Windows::UI::Notifications::ToastNotificationManager::CreateToastNotifier(g_toastAumid.c_str());
         // Toasts of a previous run stay in the notification center, but nobody answers their clicks any more.
         // History().Clear(aumid) leaves them (seen 15.10.2026); removing each by tag and group works (ours always have
         // the group "wsa"; an empty group is E_INVALIDARG). Cleanup failures must not cost the toasts themselves.
         auto history = winrt::Windows::UI::Notifications::ToastNotificationManager::History();
         try
         {
-            for (const auto& t : history.GetHistory(kToastAumid))
-                if (!t.Group().empty()) history.Remove(t.Tag(), t.Group(), kToastAumid);
+            for (const auto& t : history.GetHistory(g_toastAumid.c_str()))
+                if (!t.Group().empty()) history.Remove(t.Tag(), t.Group(), g_toastAumid.c_str());
         }
         catch (const winrt::hresult_error&) {}
         state = 1;
@@ -3467,7 +3480,7 @@ static void HideToast(const std::string& tag)
 {
     if (!ToastInit()) return;
     ComThread();
-    try { winrt::Windows::UI::Notifications::ToastNotificationManager::History().Remove(Widen(tag), L"wsa", kToastAumid); }
+    try { winrt::Windows::UI::Notifications::ToastNotificationManager::History().Remove(Widen(tag), L"wsa", g_toastAumid.c_str()); }
     catch (const winrt::hresult_error&) {}
 }
 
@@ -4743,8 +4756,14 @@ static BOOL WINAPI OnCtrl(DWORD)
 }
 
 // ---- the Windows service ---------------------------------------------------------------------------------------
-static const wchar_t* kSvcName = L"WsaRebornHost";
-static const wchar_t* kVmMarker = L"Global\\WsaRebornHostVm";
+static std::wstring g_svcName = L"WsaRebornHost";        // Inst() of it after ReadInstance
+static std::wstring g_vmMarker = L"Global\\WsaRebornHostVm";
+static std::wstring EnvPath(const std::wstring& s)
+{
+    wchar_t out[MAX_PATH];
+    ExpandEnvironmentStringsW(s.c_str(), out, MAX_PATH);
+    return out;
+}
 static SERVICE_STATUS_HANDLE g_svc;
 static std::wstring g_svcDir;
 static int RunVm(const wchar_t* config, unsigned short port, std::string log);
@@ -4771,7 +4790,7 @@ static DWORD WINAPI SvcCtrl(DWORD control, DWORD, void*, void*)
 
 static void WINAPI SvcMain(DWORD, LPWSTR*)
 {
-    g_svc = RegisterServiceCtrlHandlerExW(kSvcName, SvcCtrl, nullptr);
+    g_svc = RegisterServiceCtrlHandlerExW(g_svcName.c_str(), SvcCtrl, nullptr);
     SvcReport(SERVICE_START_PENDING);
     // See ConfigFile: configuration from the exe's folder, own files in %ProgramData%\WsaReborn (SYSTEM and
     // administrators write, users read — the default ProgramData ACL would let users plant files there), the user's
@@ -4780,7 +4799,7 @@ static void WINAPI SvcMain(DWORD, LPWSTR*)
     GetModuleFileNameW(nullptr, self, MAX_PATH);
     g_configDir.assign(self, wcsrchr(self, L'\\'));
     g_userDir = g_svcDir;
-    ExpandEnvironmentStringsW(L"%ProgramData%\\WsaReborn", state, MAX_PATH);
+    wcscpy_s(state, EnvPath(Inst(L"%ProgramData%\\WsaReborn")).c_str());
     PSECURITY_DESCRIPTOR sd = nullptr;
     ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;AU)", SDDL_REVISION_1, &sd, nullptr);
     SECURITY_ATTRIBUTES sa{sizeof sa, sd, FALSE};
@@ -4801,14 +4820,14 @@ static void WINAPI SvcMain(DWORD, LPWSTR*)
     if (out && h != INVALID_HANDLE_VALUE) _dup2(_open_osfhandle((intptr_t)h, _O_WRONLY), _fileno(stdout));
     setvbuf(stdout, nullptr, _IONBF, 0);
     SvcReport(SERVICE_RUNNING);
-    int rc = RunVm(L"config.json", 58600, "console.log");
+    int rc = RunVm(L"config.json", g_port, "console.log");
     SvcReport(SERVICE_STOPPED, rc ? rc : 1);
 }
 
 static SC_HANDLE OpenVmService(DWORD access)
 {
     SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-    SC_HANDLE s = scm ? OpenServiceW(scm, kSvcName, access) : nullptr;
+    SC_HANDLE s = scm ? OpenServiceW(scm, g_svcName.c_str(), access) : nullptr;
     if (scm) CloseServiceHandle(scm);
     return s;
 }
@@ -4829,7 +4848,7 @@ static DWORD ServicePid()
 // closed to this user — refused access still means it exists.
 static bool VmHalfRunning()
 {
-    HANDLE h = OpenMutexW(SYNCHRONIZE, FALSE, kVmMarker);
+    HANDLE h = OpenMutexW(SYNCHRONIZE, FALSE, g_vmMarker.c_str());
     if (h) { CloseHandle(h); return true; }
     return GetLastError() == ERROR_ACCESS_DENIED;
 }
@@ -4838,9 +4857,9 @@ static bool VmHalfRunning()
 static bool StartVmService()
 {
     SC_HANDLE s = OpenVmService(SERVICE_START);
-    if (!s) { std::printf("client: no service %ls installed (%lu) — waiting for a VM started otherwise\n", kSvcName, GetLastError()); return true; }
+    if (!s) { std::printf("client: no service %ls installed (%lu) — waiting for a VM started otherwise\n", g_svcName.c_str(), GetLastError()); return true; }
     BOOL ok = StartServiceW(s, 0, nullptr);
-    std::printf("client: starting the service %ls: %s (%lu)\n", kSvcName, ok ? "ok" : "failed", ok ? 0 : GetLastError());
+    std::printf("client: starting the service %ls: %s (%lu)\n", g_svcName.c_str(), ok ? "ok" : "failed", ok ? 0 : GetLastError());
     CloseServiceHandle(s);
     return ok;
 }
@@ -4850,7 +4869,7 @@ static int StopService()
     SC_HANDLE s = OpenVmService(SERVICE_STOP);
     SERVICE_STATUS st{};
     BOOL ok = s && ControlService(s, SERVICE_CONTROL_STOP, &st);
-    std::printf("stop %ls: %s (%lu)\n", kSvcName, ok ? "ok" : "failed", ok ? 0 : GetLastError());
+    std::printf("stop %ls: %s (%lu)\n", g_svcName.c_str(), ok ? "ok" : "failed", ok ? 0 : GetLastError());
     if (s) CloseServiceHandle(s);
     return ok ? 0 : 1;
 }
@@ -4862,7 +4881,7 @@ static int Install(const wchar_t* folder)
     std::wstring dir = folder ? folder : std::wstring(self, wcsrchr(self, L'\\'));
     if (GetFileAttributesW((dir + L"\\config.json").c_str()) == INVALID_FILE_ATTRIBUTES) { std::printf("no config.json in %ls\n", dir.c_str()); return 1; }
     // The binary goes where only administrators write: a LocalSystem service must not run an exe from the user's temp.
-    ExpandEnvironmentStringsW(L"%ProgramFiles%\\WsaReborn", pf, MAX_PATH);
+    wcscpy_s(pf, EnvPath(Inst(L"%ProgramFiles%\\WsaReborn")).c_str());
     CreateDirectoryW(pf, nullptr);
     std::wstring exe = std::wstring(pf) + L"\\wsa-reborn-host.exe";
     if (_wcsicmp(exe.c_str(), self) && !CopyFileW(self, exe.c_str(), FALSE)) { std::printf("cannot copy to %ls (%lu)\n", exe.c_str(), GetLastError()); return 1; }
@@ -4876,9 +4895,9 @@ static int Install(const wchar_t* folder)
     std::wstring cmd = L"\"" + exe + L"\" --service \"" + dir + L"\"";
     SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE);
     if (!scm) { std::printf("OpenSCManager: %lu (run as administrator)\n", GetLastError()); return 1; }
-    SC_HANDLE s = CreateServiceW(scm, kSvcName, L"WSA-Reborn host (VM)", SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START,
+    SC_HANDLE s = CreateServiceW(scm, g_svcName.c_str(), L"WSA-Reborn host (VM)", SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START,
                                  SERVICE_ERROR_NORMAL, cmd.c_str(), nullptr, nullptr, nullptr, nullptr, nullptr);
-    if (!s && GetLastError() == ERROR_SERVICE_EXISTS && (s = OpenServiceW(scm, kSvcName, SERVICE_ALL_ACCESS)))
+    if (!s && GetLastError() == ERROR_SERVICE_EXISTS && (s = OpenServiceW(scm, g_svcName.c_str(), SERVICE_ALL_ACCESS)))
         ChangeServiceConfigW(s, SERVICE_NO_CHANGE, SERVICE_DEMAND_START, SERVICE_NO_CHANGE, cmd.c_str(), nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
     CloseServiceHandle(scm);
     if (!s) { std::printf("CreateService: %lu\n", GetLastError()); return 1; }
@@ -4887,7 +4906,7 @@ static int Install(const wchar_t* folder)
     PSECURITY_DESCRIPTOR sd = nullptr;
     BOOL ok = ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sd, nullptr) && SetServiceObjectSecurity(s, DACL_SECURITY_INFORMATION, sd);
     std::printf("service %ls: %ls\n  folder %ls, user start/stop: %s\n  config.json and shares.txt copied to %ls (run --install again after editing them)\n",
-                kSvcName, cmd.c_str(), dir.c_str(), ok ? "ok" : "FAILED", pf);
+                g_svcName.c_str(), cmd.c_str(), dir.c_str(), ok ? "ok" : "FAILED", pf);
     if (sd) LocalFree(sd);
     CloseServiceHandle(s);
     return ok ? 0 : 1;
@@ -4903,11 +4922,11 @@ static int Uninstall()
     BOOL ok = DeleteService(s);
     CloseServiceHandle(s);
     wchar_t exe[MAX_PATH];
-    ExpandEnvironmentStringsW(L"%ProgramFiles%\\WsaReborn\\wsa-reborn-host.exe", exe, MAX_PATH);
+    wcscpy_s(exe, EnvPath(Inst(L"%ProgramFiles%\\WsaReborn") + L"\\wsa-reborn-host.exe").c_str());
     BOOL gone = DeleteFileW(exe) || GetLastError() == ERROR_FILE_NOT_FOUND;
     for (const wchar_t* name : {L"config.json", L"shares.txt"})
         DeleteFileW((std::wstring(exe, wcsrchr(exe, L'\\')) + L"\\" + name).c_str());
-    std::printf("service %ls removed: %s, %ls deleted: %s\n", kSvcName, ok ? "ok" : "failed", exe, gone ? "ok" : "no (still running?)");
+    std::printf("service %ls removed: %s, %ls deleted: %s\n", g_svcName.c_str(), ok ? "ok" : "failed", exe, gone ? "ok" : "no (still running?)");
     return ok ? 0 : 1;
 }
 
@@ -5086,7 +5105,7 @@ static int ClientMain(unsigned short port)
         if (i % 20 == 6 && !started && !VmHalfRunning()) started = StartVmService();  // again while a stopping service refuses the start
         // The agent's VM half writes it here, the service's in its own folder (see ConfigFile); a dead one is skipped.
         wchar_t svcRuntime[MAX_PATH];
-        ExpandEnvironmentStringsW(L"%ProgramData%\\WsaReborn\\runtime.txt", svcRuntime, MAX_PATH);
+        wcscpy_s(svcRuntime, EnvPath(Inst(L"%ProgramData%\\WsaReborn") + L"\\runtime.txt").c_str());
         std::ifstream f(i % 2 ? svcRuntime : L"runtime.txt");
         DWORD pid = 0;
         std::string ip, gw;
@@ -5110,7 +5129,7 @@ static int ClientMain(unsigned short port)
     if (g_devHost.count("hdvclient") && SharesHaveHdv())
     {
         wchar_t svcDir[MAX_PATH];
-        ExpandEnvironmentStringsW(L"%ProgramData%\\WsaReborn", svcDir, MAX_PATH);
+        wcscpy_s(svcDir, EnvPath(Inst(L"%ProgramData%\\WsaReborn")).c_str());
         // A process of its own: one device host registers per process (HdvProxyDeviceHost), and wsldevicehost.dll's
         // virtio-fs devices in this process got 0xc0370030 once our HDV host was registered here. The child dies with
         // this process (a job that kills on close).
@@ -5154,7 +5173,7 @@ static int LaunchApp(const wchar_t* package)
         sockaddr_in a{};
         a.sin_family = AF_INET;
         a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        a.sin_port = htons(58610);
+        a.sin_port = htons(g_port + 10);
         char buf[256];
         int n = -1;
         if (!connect(c, (sockaddr*)&a, sizeof a))
@@ -5310,8 +5329,8 @@ static LSTATUS SetSignInStart(bool on)
     wchar_t self[MAX_PATH];
     GetModuleFileNameW(nullptr, self, MAX_PATH);
     const std::wstring cmd = L"\"" + std::wstring(self) + L"\" --client";
-    rc = on ? RegSetValueExW(run, L"WsaRebornHost", 0, REG_SZ, (const BYTE*)cmd.c_str(), (DWORD)(cmd.size() + 1) * sizeof(wchar_t))
-            : RegDeleteValueW(run, L"WsaRebornHost");
+    rc = on ? RegSetValueExW(run, Inst(L"WsaRebornHost").c_str(), 0, REG_SZ, (const BYTE*)cmd.c_str(), (DWORD)(cmd.size() + 1) * sizeof(wchar_t))
+            : RegDeleteValueW(run, Inst(L"WsaRebornHost").c_str());
     if (rc == ERROR_FILE_NOT_FOUND) rc = ERROR_SUCCESS;
     RegCloseKey(run);
     return rc;
@@ -5459,7 +5478,8 @@ static HWND SettingsCreate(bool visible)
     wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     wc.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
-    wc.lpszClassName = L"WsaRebornHostSettings";
+    static const std::wstring cls = Inst(L"WsaRebornHostSettings");
+    wc.lpszClassName = cls.c_str();
     RegisterClassW(&wc);
     RECT r{0, 0, px(520), px(398)};
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
@@ -5500,7 +5520,7 @@ static HWND SettingsCreate(bool visible)
 
 static int SettingsWindow()
 {
-    if (HWND old = FindWindowW(L"WsaRebornHostSettings", nullptr)) { ShowWindow(old, SW_RESTORE); SetForegroundWindow(old); return 0; }
+    if (HWND old = FindWindowW(Inst(L"WsaRebornHostSettings").c_str(), nullptr)) { ShowWindow(old, SW_RESTORE); SetForegroundWindow(old); return 0; }
     // Started from a shortcut, the console exe gets a console of its own: drop it (a shell's console is shared — keep).
     DWORD pids[2];
     if (GetConsoleProcessList(pids, 2) == 1) FreeConsole();
@@ -5546,8 +5566,27 @@ static int SettingsTest(int argc, wchar_t** argv)
     return 0;
 }
 
+// "instance" and "port" of shares.txt in <dir> (see g_instance), before anything that uses the names: the host folder
+// for the agent, the client and --install <folder>; for the service its Program Files folder, where --install copied it.
+static void ReadInstance(const std::wstring& dir)
+{
+    std::ifstream f(dir + L"\\shares.txt");
+    for (std::string line; std::getline(f, line);)
+    {
+        std::istringstream in(line);
+        std::string first, value;
+        if (!(in >> first >> value)) continue;
+        if (first == "instance" && std::regex_match(value, std::regex("[A-Za-z0-9_]{1,32}"))) g_instance = Widen(value);
+        else if (first == "port" && std::atoi(value.c_str()) > 0 && std::atoi(value.c_str()) < 65526) g_port = (unsigned short)std::atoi(value.c_str());
+    }
+    g_svcName = Inst(L"WsaRebornHost");
+    g_vmMarker = L"Global\\" + Inst(L"WsaRebornHostVm");
+    g_toastAumid = Inst(L"WsaReborn.Host");
+}
+
 int wmain(int argc, wchar_t** argv)
 {
+    ReadInstance(argc > 2 && !wcscmp(argv[1], L"--install") ? std::wstring(argv[2]) : ExeDir());
     if (argc == 3 && !wcscmp(argv[1], L"--launch")) return LaunchApp(argv[2]);
     if (argc == 3 && !wcscmp(argv[1], L"--lifecycle")) return SetLifecycle(argv[2]);
     if (argc == 2 && !wcscmp(argv[1], L"--settings")) return SettingsWindow();
@@ -5557,20 +5596,21 @@ int wmain(int argc, wchar_t** argv)
     if (argc >= 4 && !wcscmp(argv[1], L"--config"))
         return MakeConfig(Narrow(argv[2]), Narrow(argv[3]), argc > 4 ? _wtoi(argv[4]) : 4096, argc > 5 ? _wtoi(argv[5]) : 4);
     if (argc >= 3 && !wcscmp(argv[1], L"--hdv-host")) return HdvHostMain(argv[2], argc > 3 ? argv[3] : nullptr);
-    if (argc >= 2 && !wcscmp(argv[1], L"--client")) return ClientMain(argc > 2 ? (unsigned short)_wtoi(argv[2]) : 58600);
+    if (argc >= 2 && !wcscmp(argv[1], L"--client")) return ClientMain(argc > 2 ? (unsigned short)_wtoi(argv[2]) : g_port);
     if (argc >= 2 && !wcscmp(argv[1], L"--install")) return Install(argc > 2 ? argv[2] : nullptr);
     if (argc >= 2 && !wcscmp(argv[1], L"--uninstall")) return Uninstall();
     if (argc >= 2 && !wcscmp(argv[1], L"--stop")) return StopService();
     if (argc == 3 && !wcscmp(argv[1], L"--service"))
     {
         g_svcDir = argv[2];
-        SERVICE_TABLE_ENTRYW table[] = {{(LPWSTR)kSvcName, SvcMain}, {nullptr, nullptr}};
+        SERVICE_TABLE_ENTRYW table[] = {{(LPWSTR)g_svcName.c_str(), SvcMain}, {nullptr, nullptr}};
         return StartServiceCtrlDispatcherW(table) ? 0 : 1;
     }
     if (argc < 2) { std::printf("usage: wsa-reborn-host <config.json> [adb-port] [console-log] | --client [adb-port] | --launch <package> | --lifecycle <mode> | --settings | --config <install-dir> <data-dir> [mem-MB] [cpus] | --networks | --install [folder] | --uninstall | --stop\n"); return 2; }
     setvbuf(stdout, nullptr, _IONBF, 0);
     SetConsoleCtrlHandler(OnCtrl, TRUE);
-    return RunVm(argv[1], argc > 2 ? (unsigned short)_wtoi(argv[2]) : 58600, argc > 3 ? Narrow(argv[3]) : "wsa-reborn-host-console.log");
+    // The agent always passes 58600: an instance's "port" line wins.
+    return RunVm(argv[1], argc > 2 && g_port == 58600 ? (unsigned short)_wtoi(argv[2]) : g_port, argc > 3 ? Narrow(argv[3]) : "wsa-reborn-host-console.log");
 }
 
 // The VM half (the whole host without "client separate"): blocks while the VM runs.
@@ -5578,12 +5618,20 @@ static int RunVm(const wchar_t* config, unsigned short port, std::string log)
 {
     // Seen by a client before runtime.txt exists (VmHalfRunning): a client started together with the agent's VM
     // started the service as well, and the service took the agent's VM for a stale one and terminated it (15.10.2026).
-    CreateMutexW(nullptr, FALSE, kVmMarker);
+    CreateMutexW(nullptr, FALSE, g_vmMarker.c_str());
     std::ifstream f(ConfigFile(config), std::ios::binary);
     std::stringstream ss;
     ss << f.rdbuf();
     std::string json = ss.str();
     if (json.empty()) { std::printf("cannot read %ls\n", config); return 1; }
+    if (!g_instance.empty())
+        for (const char* pipe : {"wsa-reborn-host-com1\"", "wsa-reborn-host-hvc0\""})
+            for (size_t at; (at = json.find(pipe)) != std::string::npos;)
+                json.insert(at + std::strlen(pipe) - 1, "-" + Narrow(g_instance.c_str()));
+    // The VM's memory process in Task Manager: vmmem<suffix>, as WSL's vmmemWSL and WSA's vmmemWSA.
+    if (!g_instance.empty() && json.find("HostingProcessNameSuffix") == std::string::npos)
+        json = std::regex_replace(json, std::regex("(\"Memory\"\\s*:\\s*\\{)"), "$1\"HostingProcessNameSuffix\":\"Wsa" + Narrow(g_instance.c_str()) + "\",",
+                                  std::regex_constants::format_first_only);
 
     ReadSettings();
     if (g_memoryMb)
@@ -5624,8 +5672,9 @@ static int RunVm(const wchar_t* config, unsigned short port, std::string log)
         std::printf("grant %s: 0x%08lx\n", p.c_str(), hr);
     }
 
-    std::thread(Console, kComPipe, log + ".com1").detach();
-    std::thread(Console, kHvcPipe, log).detach();
+    static const std::wstring com = Inst(kComPipe), hvc = Inst(kHvcPipe);
+    std::thread(Console, com.c_str(), log + ".com1").detach();
+    std::thread(Console, hvc.c_str(), log).detach();
     Sleep(200);
 
     HCS_OPERATION op = HcsCreateOperation(nullptr, nullptr);
