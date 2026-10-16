@@ -70,6 +70,7 @@
 #include <winrt/Windows.UI.Notifications.h>
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <chrono>
 #include <deque>
 #include <cstdio>
@@ -688,7 +689,6 @@ struct AsSelf
 #pragma comment(lib, "vmdevicehost.lib")
 
 static HDV_HOST g_hdvHost = nullptr;
-static std::string g_hdvModel = "External";  // "hdv test [<HostingModel>]"
 static const GUID kHdvTestClass = {0x7c1e5b2a, 0x9d43, 0x4f1e, {0x8a, 0x52, 0x3b, 0x6d, 0x91, 0x0e, 0x57, 0x53}};
 static const GUID kHdvTestInstance = {0x7c1e5b2b, 0x9d43, 0x4f1e, {0x8a, 0x52, 0x3b, 0x6d, 0x91, 0x0e, 0x57, 0x53}};
 
@@ -781,37 +781,444 @@ static HRESULT CALLBACK HdvTestWriteMmio(PVOID, HDV_PCI_BAR_SELECTOR bar, UINT64
     return S_OK;
 }
 
-// Before the VM starts: the device host belongs to the compute system.
+// ---- HDV virtio-gpu: the virtio-pci modern transport on HDV and the 2D commands of virtio-gpu ------------------
+// shares.txt line "hdv gpu [<HostingModel>]". Device 1af4:1050 (virtio-gpu, modern only), BAR0 4 KiB (a BAR of 32 KiB is refused by
+// the FlexibleIov add, 0xc0350005):
+//   0x000 common configuration, 0x100 ISR, 0x200 device configuration (struct virtio_gpu_config),
+//   0x300 notifications (4 bytes per queue), 0x400 MSI-X table (16 vectors), 0x800 MSI-X PBA.
+// Capabilities in the configuration space from 0x40: MSI-X, then the four virtio_pci_cap structures. Queues: 0 control,
+// 1 cursor, split rings in guest memory, read and written with HdvReadGuestMemory/HdvWriteGuestMemory; interrupts —
+// the MSI-X vector of the queue through HdvDeliverGuestInterrupt (under pci-hyperv the guest writes into the table
+// the address and data it got from the host). Features: VIRTIO_F_VERSION_1 only, so the guest driver stays 2D: one
+// scanout (1280x800), resources in guest memory (attach_backing), transfer_to_host_2d copies them into host memory,
+// resource_flush keeps the scanout's last frame (hdv-gpu.bmp in the host folder, every 5 s while it changes).
+// Step (1) of the own virtio-gpu (docs/own-host.md, 16.10.2026); 3D goes to stream_renderer_* next.
+struct HdvGpu
+{
+    HDV_DEVICE handle = nullptr;
+    std::mutex lock;
+    BYTE cfg[256] = {};
+    // virtio common configuration
+    UINT32 dfSelect = 0, drfSelect = 0, driverFeatures[2] = {}, gen = 0;
+    UINT16 configMsix = 0xffff, qSelect = 0;
+    BYTE status = 0;
+    struct Queue { UINT16 size = 256, msix = 0xffff, enable = 0; UINT64 desc = 0, avail = 0, used = 0; UINT16 lastAvail = 0, usedIdx = 0; } q[2];
+    BYTE isr = 0;
+    BYTE msix[16 * 16] = {};
+    // virtio-gpu
+    UINT32 eventsRead = 0;
+    struct Resource { UINT32 format = 0, width = 0, height = 0; std::vector<std::pair<UINT64, UINT32>> backing; std::vector<BYTE> pixels; };
+    std::map<UINT32, Resource> resources;
+    UINT32 scanoutResource = 0;
+    UINT64 flushes = 0, transfers = 0, commands = 0;
+    DWORD lastBmp = 0;
+    std::condition_variable kick;
+    UINT32 pending = 0;  // bit per queue
+    bool stop = false;
+};
+static HdvGpu g_hdvGpu;
+static UINT32 g_hdvGpuBar = 0xFFFFF000, g_hdvGpuVendor = 0x1af4;  // "hdv gpu <model> bar=<host value> vendor=<id>" (bisecting)
+static const GUID kHdvGpuClass = {0x7c1e5b2c, 0x9d43, 0x4f1e, {0x8a, 0x52, 0x3b, 0x6d, 0x91, 0x0e, 0x57, 0x53}};
+static const GUID kHdvGpuInstance = {0x7c1e5b2d, 0x9d43, 0x4f1e, {0x8a, 0x52, 0x3b, 0x6d, 0x91, 0x0e, 0x57, 0x53}};
+static const UINT64 kVirtioFVersion1 = 1ULL << 32;
+
+static void HdvGpuBuildConfig(HdvGpu& d)
+{
+    BYTE* c = d.cfg;
+    auto put16 = [&](int o, UINT16 v) { std::memcpy(c + o, &v, 2); };
+    auto put32 = [&](int o, UINT32 v) { std::memcpy(c + o, &v, 4); };
+    put16(0, 0x1af4); put16(2, 0x1050);
+    put16(6, 0x0010);         // status: capabilities list
+    c[8] = 1;                 // revision 1: modern
+    c[0x0b] = 0x03; c[0x0a] = 0x80;  // display controller, other
+    put16(0x2c, 0x1af4); put16(0x2e, 0x1100);
+    c[0x34] = 0x40;
+    // MSI-X: 16 vectors, table BAR0+0x400, PBA BAR0+0x800
+    c[0x40] = 0x11; c[0x41] = 0x50; put16(0x42, 15); put32(0x44, 0x400); put32(0x48, 0x800);
+    // virtio_pci_cap { vndr 9, next, len, cfg_type, bar, id, pad[2], offset, length } [+ notify_off_multiplier]
+    auto cap = [&](int o, int next, int len, int type, UINT32 off, UINT32 length) {
+        c[o] = 0x09; c[o + 1] = (BYTE)next; c[o + 2] = (BYTE)len; c[o + 3] = (BYTE)type; c[o + 4] = 0; put32(o + 8, off); put32(o + 12, length);
+    };
+    cap(0x50, 0x60, 16, 1, 0x0000, 0x38);  // common
+    cap(0x60, 0x70, 16, 3, 0x100, 4);     // ISR
+    cap(0x70, 0x80, 16, 4, 0x200, 16);    // device
+    cap(0x80, 0, 20, 2, 0x300, 0x100);   // notify
+    put32(0x90, 4);
+}
+
+static HRESULT CALLBACK HdvGpuInitialize(PVOID) { std::printf("hdv gpu: Initialize\n"); return S_OK; }
+static void CALLBACK HdvGpuTeardown(PVOID) { std::printf("hdv gpu: Teardown\n"); }
+static HRESULT CALLBACK HdvGpuSetConfiguration(PVOID, UINT32, const LPCWSTR*) { return S_OK; }
+static HRESULT CALLBACK HdvGpuGetDetails(PVOID, PHDV_PCI_PNP_ID id, UINT32 count, UINT32* bars)
+{
+    *id = {};
+    id->VendorID = (UINT16)g_hdvGpuVendor; id->DeviceID = 0x1050; id->RevisionID = 1;
+    id->BaseClass = 0x03; id->SubClass = 0x80;
+    id->SubVendorID = 0x1af4; id->SubSystemID = 0x1100;
+    for (UINT32 i = 0; i < count; i++) bars[i] = 0;
+    if (count > 0) bars[0] = g_hdvGpuBar;  // 4 KiB
+    std::printf("hdv gpu: GetDetails\n");
+    return S_OK;
+}
+static HRESULT CALLBACK HdvGpuStart(PVOID) { std::printf("hdv gpu: Start\n"); return S_OK; }
+static void CALLBACK HdvGpuStop(PVOID) { std::printf("hdv gpu: Stop\n"); }
+static HRESULT CALLBACK HdvGpuReadConfig(PVOID, UINT32 offset, UINT32* value)
+{
+    std::lock_guard<std::mutex> l(g_hdvGpu.lock);
+    *value = 0;
+    if (offset + 4 <= sizeof g_hdvGpu.cfg) std::memcpy(value, g_hdvGpu.cfg + offset, 4);
+    static int logged = 0;
+    if (logged++ < 200) std::printf("hdv gpu: config read 0x%03x -> 0x%08x\n", offset, *value);
+    return S_OK;
+}
+static HRESULT CALLBACK HdvGpuWriteConfig(PVOID, UINT32 offset, UINT32 value)
+{
+    std::lock_guard<std::mutex> l(g_hdvGpu.lock);
+    std::printf("hdv gpu: config write 0x%03x <- 0x%08x\n", offset, value);
+    if (offset == 0x04) std::memcpy(g_hdvGpu.cfg + 4, &value, 2);  // command; status stays
+    else if (offset == 0x40) { UINT16 ctl = (UINT16)(value >> 16) & 0xc000; UINT16 old; std::memcpy(&old, g_hdvGpu.cfg + 0x42, 2); old = (old & 0x3fff) | ctl; std::memcpy(g_hdvGpu.cfg + 0x42, &old, 2); }
+    else if (offset == 0x3c) g_hdvGpu.cfg[0x3c] = (BYTE)value;
+    return S_OK;
+}
+
+// The common configuration as bytes, so that 1-, 2- and 4-byte accesses work alike.
+static void HdvGpuCommonBytes(HdvGpu& d, BYTE* b)
+{
+    std::memset(b, 0, 0x48);
+    auto put16 = [&](int o, UINT16 v) { std::memcpy(b + o, &v, 2); };
+    auto put32 = [&](int o, UINT32 v) { std::memcpy(b + o, &v, 4); };
+    auto put64 = [&](int o, UINT64 v) { std::memcpy(b + o, &v, 8); };
+    put32(0x00, d.dfSelect);
+    put32(0x04, d.dfSelect == 1 ? (UINT32)(kVirtioFVersion1 >> 32) : 0);
+    put32(0x08, d.drfSelect);
+    put32(0x0c, d.drfSelect < 2 ? d.driverFeatures[d.drfSelect] : 0);
+    put16(0x10, d.configMsix);
+    put16(0x12, 2);
+    b[0x14] = d.status;
+    b[0x15] = (BYTE)d.gen;
+    put16(0x16, d.qSelect);
+    if (d.qSelect < 2)
+    {
+        auto& q = d.q[d.qSelect];
+        put16(0x18, q.size); put16(0x1a, q.msix); put16(0x1c, q.enable); put16(0x1e, d.qSelect);
+        put64(0x20, q.desc); put64(0x28, q.avail); put64(0x30, q.used);
+    }
+}
+
+static void HdvGpuReset(HdvGpu& d)
+{
+    d.dfSelect = d.drfSelect = 0; d.driverFeatures[0] = d.driverFeatures[1] = 0;
+    d.configMsix = 0xffff; d.qSelect = 0; d.status = 0; d.isr = 0;
+    for (auto& q : d.q) q = HdvGpu::Queue{};
+    d.resources.clear(); d.scanoutResource = 0;
+}
+
+static void HdvGpuInterrupt(HdvGpu& d, UINT16 vector)
+{
+    UINT16 ctl;
+    std::memcpy(&ctl, d.cfg + 0x42, 2);
+    if (!(ctl & 0x8000) || vector >= 16) { d.isr |= 1; return; }  // no MSI-X: there is no INTx through HDV
+    UINT32 lo, hi, data, vctl;
+    std::memcpy(&lo, d.msix + vector * 16, 4); std::memcpy(&hi, d.msix + vector * 16 + 4, 4);
+    std::memcpy(&data, d.msix + vector * 16 + 8, 4); std::memcpy(&vctl, d.msix + vector * 16 + 12, 4);
+    if (vctl & 1) return;  // masked (the pending bit is not kept: virtio re-checks the ring anyway)
+    HRESULT hr = HdvDeliverGuestInterrupt(d.handle, (UINT64)hi << 32 | lo, data);
+    static int logged = 0;
+    if (logged++ < 10 || FAILED(hr)) std::printf("hdv gpu: interrupt vector %u -> 0x%llx/0x%x: 0x%08lx\n", vector, (UINT64)hi << 32 | lo, data, hr);
+}
+
+static HRESULT CALLBACK HdvGpuReadMmio(PVOID, HDV_PCI_BAR_SELECTOR bar, UINT64 offset, UINT64 length, BYTE* value)
+{
+    auto& d = g_hdvGpu;
+    std::lock_guard<std::mutex> l(d.lock);
+    std::memset(value, 0, (size_t)length);
+    if (offset < 0x40) { BYTE b[0x48]; HdvGpuCommonBytes(d, b); std::memcpy(value, b + offset, (size_t)std::min<UINT64>(length, 0x48 - offset)); }
+    else if (offset == 0x100) { value[0] = d.isr; d.isr = 0; }
+    else if (offset >= 0x200 && offset < 0x210)
+    {
+        UINT32 c[4] = {d.eventsRead, 0, 1 /* num_scanouts */, 0 /* num_capsets */};
+        std::memcpy(value, (BYTE*)c + (offset - 0x200), (size_t)std::min<UINT64>(length, 0x210 - offset));
+    }
+    else if (offset >= 0x400 && offset < 0x400 + sizeof d.msix) std::memcpy(value, d.msix + (offset - 0x400), (size_t)std::min<UINT64>(length, 0x400 + sizeof d.msix - offset));
+    return S_OK;
+}
+
+static HRESULT CALLBACK HdvGpuWriteMmio(PVOID, HDV_PCI_BAR_SELECTOR bar, UINT64 offset, UINT64 length, const BYTE* value)
+{
+    auto& d = g_hdvGpu;
+    std::unique_lock<std::mutex> l(d.lock);
+    if (offset < 0x40 && offset + length <= 0x40)
+    {
+        BYTE b[0x48];
+        HdvGpuCommonBytes(d, b);
+        std::memcpy(b + offset, value, (size_t)length);
+        auto get16 = [&](int o) { UINT16 v; std::memcpy(&v, b + o, 2); return v; };
+        auto get32 = [&](int o) { UINT32 v; std::memcpy(&v, b + o, 4); return v; };
+        auto get64 = [&](int o) { UINT64 v; std::memcpy(&v, b + o, 8); return v; };
+        d.dfSelect = get32(0x00);
+        d.drfSelect = get32(0x08);
+        if (offset <= 0x0c && offset + length > 0x0c && d.drfSelect < 2) d.driverFeatures[d.drfSelect] = get32(0x0c);
+        d.configMsix = get16(0x10);
+        if (offset <= 0x14 && offset + length > 0x14)
+        {
+            BYTE s = b[0x14];
+            std::printf("hdv gpu: status 0x%02x, driver features 0x%08x%08x\n", s, d.driverFeatures[1], d.driverFeatures[0]);
+            if (s == 0) HdvGpuReset(d);
+            else d.status = s;
+        }
+        if (offset <= 0x16 && offset + length > 0x16) d.qSelect = get16(0x16);
+        else if (d.qSelect < 2 && offset >= 0x18)
+        {
+            auto& q = d.q[d.qSelect];
+            q.size = get16(0x18); q.msix = get16(0x1a); q.desc = get64(0x20); q.avail = get64(0x28); q.used = get64(0x30);
+            UINT16 en = get16(0x1c);
+            if (en && !q.enable) std::printf("hdv gpu: queue %u enabled: size %u, msix %u, desc 0x%llx avail 0x%llx used 0x%llx\n", d.qSelect, q.size, q.msix, q.desc, q.avail, q.used);
+            q.enable = en;
+        }
+    }
+    else if (offset >= 0x200 && offset < 0x210)
+    {
+        if (offset == 0x204) { UINT32 v = 0; std::memcpy(&v, value, (size_t)std::min<UINT64>(length, 4)); d.eventsRead &= ~v; }
+    }
+    else if (offset >= 0x300 && offset < 0x400)
+    {
+        UINT32 qi = (UINT32)((offset - 0x300) / 4);
+        if (qi < 2) { d.pending |= 1u << qi; d.kick.notify_one(); }
+    }
+    else if (offset >= 0x400 && offset < 0x400 + sizeof d.msix)
+        std::memcpy(d.msix + (offset - 0x400), value, (size_t)std::min<UINT64>(length, 0x400 + sizeof d.msix - offset));
+    return S_OK;
+}
+
+// Writes the scanout's frame as a 32-bit BMP (B8G8R8X8 / B8G8R8A8 come as is, other formats are logged only).
+static void HdvGpuSaveFrame(HdvGpu& d)
+{
+    auto it = d.resources.find(d.scanoutResource);
+    if (it == d.resources.end() || it->second.pixels.empty()) return;
+    auto& r = it->second;
+    BITMAPFILEHEADER fh{};
+    BITMAPINFOHEADER ih{sizeof ih, (LONG)r.width, -(LONG)r.height, 1, 32, BI_RGB};
+    fh.bfType = 0x4d42; fh.bfOffBits = sizeof fh + sizeof ih; fh.bfSize = fh.bfOffBits + (DWORD)r.pixels.size();
+    std::ofstream o(UserFile(L"hdv-gpu.bmp"), std::ios::binary);
+    o.write((char*)&fh, sizeof fh); o.write((char*)&ih, sizeof ih); o.write((char*)r.pixels.data(), r.pixels.size());
+}
+
+// One request: the device-readable descriptors make the command, the device-writable ones take the response.
+static UINT32 HdvGpuCommand(HdvGpu& d, const std::vector<BYTE>& req, std::vector<BYTE>& resp)
+{
+    struct Hdr { UINT32 type, flags; UINT64 fence; UINT32 ctx; BYTE ring, pad[3]; };
+    if (req.size() < sizeof(Hdr)) return 0;
+    Hdr h;
+    std::memcpy(&h, req.data(), sizeof h);
+    Hdr out{0x1100 /* OK_NODATA */, h.flags & 1, h.flags & 1 ? h.fence : 0, h.ctx, h.ring};
+    auto u32 = [&](size_t o) { UINT32 v = 0; if (o + 4 <= req.size()) std::memcpy(&v, req.data() + o, 4); return v; };
+    auto u64 = [&](size_t o) { UINT64 v = 0; if (o + 8 <= req.size()) std::memcpy(&v, req.data() + o, 8); return v; };
+    resp.clear();
+    d.commands++;
+    switch (h.type)
+    {
+    case 0x0100:  // GET_DISPLAY_INFO
+    {
+        out.type = 0x1101;
+        resp.resize(sizeof out + 16 * 24);
+        UINT32 mode[6] = {0, 0, 1280, 800, 1, 0};
+        std::memcpy(resp.data() + sizeof out, mode, sizeof mode);
+        break;
+    }
+    case 0x0101:  // RESOURCE_CREATE_2D {resource_id, format, width, height}
+    {
+        auto& r = d.resources[u32(24)];
+        r.format = u32(28); r.width = u32(32); r.height = u32(36);
+        r.pixels.assign((size_t)r.width * r.height * 4, 0);
+        std::printf("hdv gpu: resource %u: %ux%u format %u\n", u32(24), r.width, r.height, r.format);
+        break;
+    }
+    case 0x0102: d.resources.erase(u32(24)); break;  // RESOURCE_UNREF
+    case 0x0103:  // SET_SCANOUT {rect, scanout_id, resource_id}
+        d.scanoutResource = u32(44);
+        std::printf("hdv gpu: scanout %u -> resource %u (%ux%u)\n", u32(40), u32(44), u32(32), u32(36));
+        break;
+    case 0x0104:  // RESOURCE_FLUSH {rect, resource_id}
+        if (u32(40) == d.scanoutResource)
+        {
+            d.flushes++;
+            if (GetTickCount() - d.lastBmp > 5000) { d.lastBmp = GetTickCount(); HdvGpuSaveFrame(d); }
+        }
+        break;
+    case 0x0105:  // TRANSFER_TO_HOST_2D {rect x y w h, offset, resource_id}
+    {
+        auto it = d.resources.find(u32(48));
+        if (it == d.resources.end()) { out.type = 0x1203; break; }  // ERR_INVALID_RESOURCE_ID
+        auto& r = it->second;
+        UINT32 x = u32(24), y = u32(28), w = u32(32), hgt = u32(36);
+        UINT64 off = u64(40);
+        UINT32 stride = r.width * 4;
+        d.transfers++;
+        for (UINT32 row = 0; row < hgt && y + row < r.height; row++)
+        {
+            UINT64 src = off + (UINT64)row * stride;  // as QEMU: offset of the first byte, stride of the resource
+            UINT32 len = (std::min)(w, r.width - x) * 4;
+            BYTE* dst = r.pixels.data() + (size_t)(y + row) * stride + x * 4;
+            // Gather from the backing pages.
+            UINT64 pos = 0;
+            for (auto& [addr, blen] : r.backing)
+            {
+                if (len == 0) break;
+                if (src < pos + blen)
+                {
+                    UINT32 in = (UINT32)std::min<UINT64>(len, pos + blen - src);
+                    HdvReadGuestMemory(d.handle, addr + (src - pos), in, dst);
+                    dst += in; src += in; len -= in;
+                }
+                pos += blen;
+            }
+        }
+        break;
+    }
+    case 0x0106:  // RESOURCE_ATTACH_BACKING {resource_id, nr_entries} + {addr, length, padding} * n
+    {
+        auto it = d.resources.find(u32(24));
+        if (it == d.resources.end()) { out.type = 0x1203; break; }
+        it->second.backing.clear();
+        UINT32 n = u32(28);
+        for (UINT32 i = 0; i < n; i++) it->second.backing.push_back({u64(32 + i * 16), u32(40 + i * 16)});
+        break;
+    }
+    case 0x0107:  // RESOURCE_DETACH_BACKING
+    {
+        auto it = d.resources.find(u32(24));
+        if (it != d.resources.end()) it->second.backing.clear();
+        break;
+    }
+    case 0x0300: case 0x0301: break;  // UPDATE_CURSOR, MOVE_CURSOR: no response
+    default:
+        std::printf("hdv gpu: command 0x%04x not supported\n", h.type);
+        out.type = 0x1200;  // ERR_UNSPEC
+    }
+    if (h.type == 0x0300 || h.type == 0x0301) return 0;
+    if (resp.empty()) resp.resize(sizeof out);
+    std::memcpy(resp.data(), &out, sizeof out);
+    return (UINT32)resp.size();
+}
+
+static void HdvGpuProcess(HdvGpu& d, UINT32 qi)
+{
+    auto& q = d.q[qi];
+    if (!q.enable || !q.size) return;
+    struct Desc { UINT64 addr; UINT32 len; UINT16 flags, next; };
+    bool any = false;
+    for (;;)
+    {
+        UINT16 availIdx = 0;
+        HdvReadGuestMemory(d.handle, q.avail + 2, 2, (BYTE*)&availIdx);
+        if (availIdx == q.lastAvail) break;
+        UINT16 head = 0;
+        HdvReadGuestMemory(d.handle, q.avail + 4 + 2 * (q.lastAvail % q.size), 2, (BYTE*)&head);
+        q.lastAvail++;
+        std::vector<BYTE> req, resp;
+        std::vector<Desc> writable;
+        UINT16 i = head;
+        for (int n = 0; n < q.size; n++)
+        {
+            Desc ds;
+            HdvReadGuestMemory(d.handle, q.desc + 16ULL * i, 16, (BYTE*)&ds);
+            if (ds.flags & 2) writable.push_back(ds);
+            else { size_t o = req.size(); req.resize(o + ds.len); HdvReadGuestMemory(d.handle, ds.addr, ds.len, req.data() + o); }
+            if (!(ds.flags & 1)) break;
+            i = ds.next;
+        }
+        UINT32 n = HdvGpuCommand(d, req, resp), written = 0;
+        for (auto& w : writable)
+        {
+            if (written >= n) break;
+            UINT32 part = (std::min)(w.len, n - written);
+            HdvWriteGuestMemory(d.handle, w.addr, part, resp.data() + written);
+            written += part;
+        }
+        UINT32 used[2] = {head, written};
+        HdvWriteGuestMemory(d.handle, q.used + 4 + 8 * (q.usedIdx % q.size), 8, (BYTE*)used);
+        q.usedIdx++;
+        MemoryBarrier();
+        HdvWriteGuestMemory(d.handle, q.used + 2, 2, (BYTE*)&q.usedIdx);
+        any = true;
+    }
+    if (any) HdvGpuInterrupt(d, q.msix);
+}
+
+static void HdvGpuWorker()
+{
+    auto& d = g_hdvGpu;
+    std::unique_lock<std::mutex> l(d.lock);
+    while (!d.stop)
+    {
+        d.kick.wait(l, [&] { return d.pending || d.stop; });
+        UINT32 p = d.pending;
+        d.pending = 0;
+        for (UINT32 qi = 0; qi < 2; qi++)
+            if (p & 1u << qi) HdvGpuProcess(d, qi);
+    }
+}
+
+// Before the VM starts: the device host belongs to the compute system. "hdv <test|gpu> [<HostingModel>]" lines.
+static std::vector<std::pair<std::string, std::string>> g_hdvDevices;  // kind, hosting model
+
 static void HdvInit()
 {
     std::ifstream f(ConfigFile(L"shares.txt"));
-    bool want = false;
     for (std::string line; std::getline(f, line);)
     {
         std::istringstream in(line);
-        std::string w;
-        if (in >> w && w == "hdv") { want = true; std::string kind, model; if (in >> kind >> model) g_hdvModel = model; }
+        std::string w, kind, model = "External";
+        if (in >> w >> kind && w == "hdv")
+        {
+            in >> model;
+            for (std::string o; in >> o;)
+            {
+                if (o.rfind("bar=", 0) == 0) g_hdvGpuBar = std::stoul(o.substr(4), nullptr, 16);
+                if (o.rfind("vendor=", 0) == 0) g_hdvGpuVendor = std::stoul(o.substr(7), nullptr, 16);
+            }
+            g_hdvDevices.push_back({kind, model});
+        }
     }
-    if (!want) return;
+    if (g_hdvDevices.empty()) return;
     HRESULT hr = HdvInitializeDeviceHost(g_system, &g_hdvHost);
     std::printf("hdv: HdvInitializeDeviceHost: 0x%08lx\n", hr);
     if (FAILED(hr)) { g_hdvHost = nullptr; return; }
-    static const HDV_PCI_DEVICE_INTERFACE iface = {HdvPciDeviceInterfaceVersion1, HdvTestInitialize, HdvTestTeardown, HdvTestSetConfiguration, HdvTestGetDetails, HdvTestStart,
-                                                   HdvTestStop, HdvTestReadConfig, HdvTestWriteConfig, HdvTestReadMmio, HdvTestWriteMmio};
-    hr = HdvCreateDeviceInstance(g_hdvHost, HdvDeviceTypePCI, &kHdvTestClass, &kHdvTestInstance, &iface, &g_hdvTest, &g_hdvTest.handle);
-    std::printf("hdv test: HdvCreateDeviceInstance: 0x%08lx\n", hr);
+    for (auto& [kind, model] : g_hdvDevices)
+    {
+        if (kind == "test")
+        {
+            static const HDV_PCI_DEVICE_INTERFACE iface = {HdvPciDeviceInterfaceVersion1, HdvTestInitialize, HdvTestTeardown, HdvTestSetConfiguration, HdvTestGetDetails, HdvTestStart,
+                                                           HdvTestStop, HdvTestReadConfig, HdvTestWriteConfig, HdvTestReadMmio, HdvTestWriteMmio};
+            hr = HdvCreateDeviceInstance(g_hdvHost, HdvDeviceTypePCI, &kHdvTestClass, &kHdvTestInstance, &iface, &g_hdvTest, &g_hdvTest.handle);
+        }
+        else if (kind == "gpu")
+        {
+            static const HDV_PCI_DEVICE_INTERFACE iface = {HdvPciDeviceInterfaceVersion1, HdvGpuInitialize, HdvGpuTeardown, HdvGpuSetConfiguration, HdvGpuGetDetails, HdvGpuStart,
+                                                           HdvGpuStop, HdvGpuReadConfig, HdvGpuWriteConfig, HdvGpuReadMmio, HdvGpuWriteMmio};
+            HdvGpuBuildConfig(g_hdvGpu);
+            hr = HdvCreateDeviceInstance(g_hdvHost, HdvDeviceTypePCI, &kHdvGpuClass, &kHdvGpuInstance, &iface, &g_hdvGpu, &g_hdvGpu.handle);
+            if (SUCCEEDED(hr)) std::thread(HdvGpuWorker).detach();
+        }
+        else hr = E_INVALIDARG;
+        std::printf("hdv %s: HdvCreateDeviceInstance: 0x%08lx\n", kind.c_str(), hr);
+    }
 }
 
 // After the start: hot-add, as the virtio devices.
 static void HdvAdd()
 {
-    const std::string& model = g_hdvModel;
-    if (!g_hdvTest.handle) return;
-    std::string req = "{\"ResourcePath\":\"VirtualMachine/Devices/FlexibleIov/" + GuidStr(kHdvTestInstance).substr(1, 36) +
-                      "\",\"RequestType\":\"Add\",\"Settings\":{\"EmulatorId\":\"" + GuidStr(kHdvTestClass).substr(1, 36) + "\",\"HostingModel\":\"" + model + "\"}}";
-    HCS_OPERATION op = HcsCreateOperation(nullptr, nullptr);
-    HcsModifyComputeSystem(g_system, op, Widen(req).c_str(), nullptr);
-    Wait(op, ("hdv test: add FlexibleIov, " + model).c_str());
+    for (auto& [kind, model] : g_hdvDevices)
+    {
+        const GUID* cls = kind == "test" ? &kHdvTestClass : &kHdvGpuClass;
+        const GUID* inst = kind == "test" ? &kHdvTestInstance : &kHdvGpuInstance;
+        if (!(kind == "test" ? g_hdvTest.handle : g_hdvGpu.handle)) continue;
+        std::string req = "{\"ResourcePath\":\"VirtualMachine/Devices/FlexibleIov/" + GuidStr(*inst).substr(1, 36) +
+                          "\",\"RequestType\":\"Add\",\"Settings\":{\"EmulatorId\":\"" + GuidStr(*cls).substr(1, 36) + "\",\"HostingModel\":\"" + model + "\"}}";
+        HCS_OPERATION op = HcsCreateOperation(nullptr, nullptr);
+        HcsModifyComputeSystem(g_system, op, Widen(req).c_str(), nullptr);
+        Wait(op, ("hdv " + kind + ": add FlexibleIov, " + model).c_str());
+    }
 }
 
 static void AddShares()

@@ -11,3 +11,7 @@ shared_anr files <host folder>\share\shared_anr
 shared_tombstone files <host folder>\share\shared_tombstone
 # nic <HCN network id> <ip>/<prefix> <gateway>   — e.g. "Default Switch"; ids differ per machine (Default Switch is c08cb7b8-… everywhere), "wsa-reborn-host.exe --networks" lists them;
 #     the address is moved into the network's current subnet (ICS subnets change across reboots), gateway taken from HCN
+# hdv test [<HostingModel>]   — an own PCI test device through the HDV API (BAR0 registers, guest memory reads); testapps/pcimmio
+# hdv gpu [<HostingModel>]    — an own virtio-gpu (virtio-pci on HDV, 2D only so far; testapps/drmfill shows a picture, the host
+#                               keeps hdv-gpu.bmp). Not for the headless vendor: its minigbm switches to the virtgpu backend
+#                               and CPU lock() fails there
