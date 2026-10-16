@@ -149,6 +149,35 @@ static std::wstring g_configDir, g_userDir;
 static std::wstring ConfigFile(const wchar_t* name) { return g_configDir.empty() ? name : g_configDir + L"\\" + name; }
 static std::wstring UserFile(const std::wstring& name) { return g_userDir.empty() ? name : g_userDir + L"\\" + name; }
 
+// The guest display, as WSA's: the work area of Windows in physical px (the process is DPI aware, wmain), density by
+// the system scale (125 % = 200 dpi). Task windows map guest px 1:1 to screen px from the work area's corner, so a
+// smaller display cut off windows wider than it (1280x800 until 17.10.2026: "Settings" resized to 1661 px lost the
+// right part). In the user's session (agent, client, --hdv-host) from the desktop; the service (session 0) reads
+// display.txt, which the client writes before it starts the service. Into the guest: androidboot.wsa_display (our
+// HWC2) and androidboot.lcd_density (init.windows_x86_64.rc: ro.sf.lcd_density).
+struct GuestDisplayMode { int w = 1280, h = 800, density = 200; };
+static GuestDisplayMode DesktopDisplayMode()
+{
+    GuestDisplayMode m;
+    RECT wa{};
+    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0) && wa.right - wa.left >= 320 && wa.bottom - wa.top >= 240)
+        m.w = (wa.right - wa.left) & ~1, m.h = (wa.bottom - wa.top) & ~1, m.density = MulDiv((int)GetDpiForSystem(), 160, 96);
+    return m;
+}
+static GuestDisplayMode GuestDisplay()
+{
+    static const GuestDisplayMode m = [] {
+        DWORD session = 0;
+        ProcessIdToSessionId(GetCurrentProcessId(), &session);
+        if (session) return DesktopDisplayMode();
+        GuestDisplayMode f;
+        std::ifstream in(UserFile(L"display.txt"));
+        if (!(in >> f.w >> f.h >> f.density) || f.w < 320 || f.h < 240 || f.density < 80) f = {};
+        return f;
+    }();
+    return m;
+}
+
 // Runs one HCS operation to completion; prints and returns the HRESULT, result document goes to *doc.
 static HRESULT Wait(HCS_OPERATION op, const char* what, std::string* doc = nullptr)
 {
@@ -1562,7 +1591,7 @@ static UINT32 HdvGpuCommand(HdvGpu& d, const std::vector<BYTE>& req, std::vector
     {
         out.type = 0x1101;
         resp.resize(sizeof out + 16 * 24);
-        UINT32 mode[6] = {0, 0, 1280, 800, 1, 0};
+        UINT32 mode[6] = {0, 0, (UINT32)GuestDisplay().w, (UINT32)GuestDisplay().h, 1, 0};
         std::memcpy(resp.data() + sizeof out, mode, sizeof mode);
         break;
     }
@@ -2601,6 +2630,8 @@ struct TaskWin
     unsigned long long pictures = 0;
     HWND hwnd = nullptr;                       // created/resized/destroyed by the window thread (SyncTaskWindows)
     int shownW = 0, shownH = 0, shownX = 0, shownY = 0;
+    int reqX = 0, reqY = 0, reqW = 0, reqH = 0;  // the bounds last asked of the guest (UpdateAndroidWindow)...
+    DWORD reqAt = 0;                             // ...and when: until the guest has them, its older bounds are not applied
     bool listed = true;
 };
 static std::map<int, TaskWin> g_tasks;         // under g_frameLock
@@ -4221,7 +4252,14 @@ static LRESULT CALLBACK TaskWndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
             if (it != g_tasks.end()) tw = it->second.w, th = it->second.h;
         }
         if (g_scaleApps == kScaleResize && rc.right > 0 && rc.bottom > 0) tw = rc.right, th = rc.bottom;
-        if (task > 0 && tw > 0 && th > 0 && !IsIconic(w)) ShellMoveTask(task, p.x - wa.left, p.y - wa.top, tw, th);
+        if (task > 0 && tw > 0 && th > 0 && !IsIconic(w))
+        {
+            const int x = (std::max)(0L, p.x - wa.left), y = (std::max)(0L, p.y - wa.top);
+            ShellMoveTask(task, x, y, tw, th);
+            std::lock_guard<std::mutex> l(g_frameLock);
+            if (auto it = g_tasks.find(task); it != g_tasks.end())
+                it->second.reqX = x, it->second.reqY = y, it->second.reqW = tw, it->second.reqH = th, it->second.reqAt = GetTickCount() | 1;
+        }
     }
     // The user activated the window: the task goes to front in the guest before any click lands.
     if (msg == WM_ACTIVATE && LOWORD(wp) != WA_INACTIVE && WindowTask(w) > 0) ShellFocusTask(WindowTask(w));
@@ -4255,7 +4293,12 @@ static LRESULT CALLBACK FrameWndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == WM_APP_SYNC_TASKS) { SyncTaskWindows(); return 0; }
     if (msg == WM_APP_CLIP_SET) { ClipSetWindows(*(const ClipItems*)lp); return 0; }
     if (msg == WM_CLIPBOARDUPDATE) { ClipToGuest(); return 0; }
-    if (msg == WM_APP_TRAY) { if (LOWORD(lp) == NIN_BALLOONUSERCLICK) NotifActivate(); return 0; }
+    if (msg == WM_APP_TRAY)
+    {
+        if (LOWORD(lp) == NIN_BALLOONUSERCLICK) NotifActivate();
+        if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == NIN_SELECT) ShowWindow(w, SW_SHOWNORMAL), SetForegroundWindow(w);  // the hidden display window back
+        return 0;
+    }
     if (FrameInput(w, msg, wp, lp)) return 0;
     if (msg == WM_PAINT)
     {
@@ -4272,7 +4315,10 @@ static LRESULT CALLBACK FrameWndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     if (msg == WM_ERASEBKGND) return 1;
-    if (msg == WM_CLOSE) { ShowWindow(w, SW_MINIMIZE); return 0; }  // the VM lives on; Ctrl+C in the console stops it
+    // The VM lives on (Ctrl+C in the console, --stop or the settings window stop it): closed, the window of the whole
+    // display hides — it was minimized and taken for an app window that would not close (17.10.2026) — and the tray
+    // icon brings it back.
+    if (msg == WM_CLOSE) { ShowWindow(w, SW_HIDE); return 0; }
     return DefWindowProcW(w, msg, wp, lp);
 }
 
@@ -4310,10 +4356,24 @@ static void SyncTaskWindows()
             }
             auto shellIt = g_shellTasks.find(it->first);
             const bool overlay = it->first < 0;
+            // A window the user just moved, resized, maximized or restored: frames with the task's older bounds keep
+            // coming for a while, and following them made the window jump back and forth (17.10.2026). Wait for the
+            // asked bounds (a pixel or two off is the guest's rounding), at most 1.5 s — then the guest's, if it
+            // clamped them, win.
+            bool waiting = false;
+            if (t.reqAt && t.hwnd)
+            {
+                if (std::abs(t.x - t.reqX) <= 2 && std::abs(t.y - t.reqY) <= 2 && std::abs(t.w - t.reqW) <= 2 && std::abs(t.h - t.reqH) <= 2)
+                    t.reqAt = 0, t.shownX = t.x, t.shownY = t.y, t.shownW = t.w, t.shownH = t.h;
+                else if (GetTickCount() - t.reqAt < 1500)
+                    waiting = true;
+                else
+                    t.reqAt = 0;
+            }
             // Popups follow the guest; so do task windows (17.10.2026): a window made during the launch animation stayed
             // where the task started, and its next UpdateAndroidWindow (a move or a resize) sent the task back there.
             // Not while the user drags it, and not maximized or minimized.
-            if (t.hwnd && (t.shownX != t.x || t.shownY != t.y) && (overlay || (!GetPropW(t.hwnd, L"WsaSizing") && !IsZoomed(t.hwnd) && !IsIconic(t.hwnd))))
+            if (t.hwnd && !waiting && (t.shownX != t.x || t.shownY != t.y) && (overlay || (!GetPropW(t.hwnd, L"WsaSizing") && !IsZoomed(t.hwnd) && !IsIconic(t.hwnd))))
             {
                 RECT wr{};
                 POINT c{0, 0};
@@ -4328,7 +4388,7 @@ static void SyncTaskWindows()
                 ++it;
                 continue;
             }
-            if (t.w > 0 && t.h > 0 && (!t.hwnd || t.shownW != t.w || t.shownH != t.h))
+            if (t.w > 0 && t.h > 0 && (!t.hwnd || (!waiting && (t.shownW != t.w || t.shownH != t.h))))
             {
                 // Sizable, as WsaClient's windows: scale_apps in settings.txt says what a new size does.
                 const DWORD style = overlay ? WS_POPUP : WS_OVERLAPPEDWINDOW;
@@ -4390,7 +4450,7 @@ static void FrameWindowThread()
     wc.lpszClassName = L"WsaHeadlessFrame";
     wc.style = CS_HREDRAW | CS_VREDRAW;
     RegisterClassW(&wc);
-    RECT r{0, 0, 1280, 800};
+    RECT r{0, 0, (std::max)(640, DesktopDisplayMode().w / 2), (std::max)(400, DesktopDisplayMode().h / 2)};  // half the guest display
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
     g_frameWnd = CreateWindowW(wc.lpszClassName, (g_instance.empty() ? std::wstring(L"WSA headless (wsa-reborn-host)") : L"WSA headless (wsa-reborn-host, " + g_instance + L")").c_str(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                                r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
@@ -5173,6 +5233,10 @@ static int ClientMain(unsigned short port)
     if (port != 58600) mutexName += L"-" + std::to_wstring(port);
     g_clientMutex = CreateMutexW(nullptr, FALSE, mutexName.c_str());
     if (GetLastError() == ERROR_ALREADY_EXISTS) { std::printf("client: already running\n"); return 1; }
+    {
+        const GuestDisplayMode d = DesktopDisplayMode();  // for the service, which cannot see the desktop (GuestDisplay)
+        std::ofstream("display.txt") << d.w << " " << d.h << " " << d.density << "\n";
+    }
     ReadSettings();
     ApplyClipSetting();
     std::printf("client: lifecycle %s, idle %g minutes\n", kLifecycleNames[g_lifecycle], g_idleMinutes);
@@ -5697,6 +5761,9 @@ static void ReadInstance(const std::wstring& dir)
 
 int wmain(int argc, wchar_t** argv)
 {
+    // Physical px everywhere: windows, mouse, work area and the guest display agree, and Windows no longer stretches the
+    // windows by its scale (a DPI-unaware client at 125 % showed Android 1.25 times bigger and blurred, 17.10.2026).
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
     ReadInstance(argc > 2 && !wcscmp(argv[1], L"--install") ? std::wstring(argv[2]) : ExeDir());
     if (argc == 3 && !wcscmp(argv[1], L"--launch")) return LaunchApp(argv[2]);
     if (argc == 3 && !wcscmp(argv[1], L"--lifecycle")) return SetLifecycle(argv[2]);
@@ -5749,6 +5816,14 @@ static int RunVm(const wchar_t* config, unsigned short port, std::string log)
     {
         json = std::regex_replace(json, std::regex("(\"SizeInMB\"\\s*:\\s*)[0-9]+"), "$01" + std::to_string(g_memoryMb), std::regex_constants::format_first_only);
         std::printf("memory: %d MB (settings.txt)\n", g_memoryMb);
+    }
+    {
+        const GuestDisplayMode d = GuestDisplay();
+        const std::string mode = std::to_string(d.w) + "x" + std::to_string(d.h);
+        json = std::regex_replace(json, std::regex("androidboot\\.lcd_density=[0-9]+"), "androidboot.lcd_density=" + std::to_string(d.density));
+        if (json.find("androidboot.wsa_display=") == std::string::npos)
+            json = std::regex_replace(json, std::regex("(\"KernelCmdLine\"\\s*:\\s*\")"), "$1androidboot.wsa_display=" + mode + "@60 ", std::regex_constants::format_first_only);
+        std::printf("display: %s, %d dpi\n", mode.c_str(), d.density);
     }
 
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);

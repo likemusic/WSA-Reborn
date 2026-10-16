@@ -8,8 +8,8 @@
  * renderControl and dies without virtio-gpu; this module is dropped in its place, the service binary
  * (hwcomposer-service.windows, a passthrough loader of the "hwcomposer" module) stays.
  *
- * Mode: vendor.wsa.headless.mode = <width>x<height>@<fps> (default 1280x800@60), density from ro.sf.lcd_density
- * (default 200).
+ * Mode: vendor.wsa.headless.mode = <width>x<height>@<fps>, else ro.boot.wsa_display (the own host: the work area of
+ * Windows), default 1280x800@60; density from ro.sf.lcd_density (default 200).
  *
  * Frame sink (15.10.2026): every presented client target is copied out of its dma-buf (minigbm dmaheap handle: one
  * linear plane, fds[0]) and sent to the host over vsock, port vendor.wsa.headless.frame_port (default 50100, 0 = off),
@@ -82,6 +82,8 @@ Mode readMode() {
     Mode m;
     char v[PROPERTY_VALUE_MAX];
     property_get("vendor.wsa.headless.mode", v, "");
+    // The own host passes the work area of Windows on the kernel command line (androidboot.wsa_display, 17.10.2026).
+    if (!v[0]) property_get("ro.boot.wsa_display", v, "");
     int w, h, f = 60;
     if (sscanf(v, "%dx%d@%d", &w, &h, &f) >= 2 && w > 0 && h > 0 && f > 0) {
         m.width = w;

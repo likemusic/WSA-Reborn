@@ -102,6 +102,8 @@ The client re-reads the file every 5 seconds; `lifecycle`, `idle`, `clipboard`, 
 
 App windows can be resized and maximized. `scale_apps` says what a new size does: `fit` scales the picture keeping its proportions, with black bars; `stretch` fills the window; `resize` gives the Android task the window's new size, as WSA does, so the app lays itself out again and the picture is pixel for pixel. The window of the whole display has `fit` and `stretch` only: the Android display keeps its size for now. App windows follow their task when Android moves it.
 
+The Android display is the size of the Windows work area in physical pixels, and its density follows the system scale (125 % → 200 dpi): a maximized app fills the work area pixel for pixel. The host passes the size to the guest on the kernel command line (`androidboot.wsa_display`), which needs the vendor image with the HWC from `device/microsoft/wsa_x86_64/headless-hwc`; an older HWC keeps 1280×800. The service cannot see the work area from session 0 and takes the size from `display.txt`, which the client writes when it starts. The window of the whole display is a mirror of the same display, scaled down; closing it hides it, and a click on the tray icon shows it again.
+
 ## 3. Install and run
 
 As administrator, once (and again after editing `config.json` or `shares.txt`):
