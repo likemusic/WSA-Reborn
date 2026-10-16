@@ -8,7 +8,7 @@ Everything else in WSA-Reborn keeps Microsoft's host: `WsaService.exe` starts th
 
 **Status: experimental.** It boots Android 16 to the home screen and runs apps in their own windows, alongside a running stock WSA. Rendering is in software: the guest has no GPU (SwiftShader + ANGLE inside Android, frames sent to the host over vsock), so it is fine for ordinary apps and automated tests and slow for games and video. Tested with an Android 16 system image (`aosp16`) on Windows 11 x64.
 
-Not done yet: hardware graphics (virtio-gpu), a settings window (the settings are a text file), registering `wsa://` and Start-menu entries (shortcuts are made in the host folder instead), and sound to Windows.
+Not done yet: hardware graphics (virtio-gpu), registering `wsa://` and Start-menu entries (shortcuts are made in the host folder instead), and sound to Windows.
 
 ## How it fits together
 
@@ -114,6 +114,7 @@ Then, as the normal user:
 | `wsa-reborn-host.exe --client` | starts the desktop half; with the VM off it starts the service, as `WsaClient` asks `WsaService` |
 | `wsa-reborn-host.exe --launch <package>` | starts an app; with the VM off starts the client (and the VM) first and waits for it |
 | `wsa-reborn-host.exe --lifecycle continuous\|asneeded\|partial` | writes the mode into `settings.txt`; `continuous` and `partial` also start the client at sign-in (a `Run` value of the user), as WSA's startup tasks do |
+| `wsa-reborn-host.exe --settings` | the settings window: resources mode, idle time, memory, clipboard, the subsystem's state and "Turn off" — it writes `settings.txt` and the start at sign-in, like `--lifecycle` |
 | `wsa-reborn-host.exe --stop` | stops the service and the VM |
 | `wsa-reborn-host.exe --uninstall` | (administrator) stops and removes the service and the Program Files copy |
 

@@ -72,6 +72,7 @@
 #include <atomic>
 #include <cstdio>
 #include <fstream>
+#include <iterator>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -3636,46 +3637,288 @@ static int ListNetworks()
     return 0;
 }
 
-// "--lifecycle continuous|asneeded|partial": the "lifecycle" line of settings.txt, and the start at sign-in that
-// "continuous" and "partial" have in WSA (the package's startup tasks) — here a Run value of the current user.
+// settings.txt next to the exe, rewritten with the given keys: their active lines are replaced in place (the first
+// one; repeats are dropped), missing keys are appended, comments and other lines stay. An empty value removes the key.
+static std::wstring ExeDir()
+{
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    return std::wstring(self, wcsrchr(self, L'\\'));
+}
+
+static bool WriteSettings(const std::map<std::string, std::string>& values)
+{
+    const std::wstring path = ExeDir() + L"\\settings.txt";
+    std::vector<std::string> lines;
+    std::set<std::string> done;
+    {
+        std::ifstream f(path);
+        for (std::string l; std::getline(f, l);)
+        {
+            if (!l.empty() && l.back() == '\r') l.pop_back();
+            std::istringstream in(l);
+            std::string key;
+            in >> key;
+            auto v = values.find(key);
+            if (v == values.end()) { lines.push_back(l); continue; }
+            if (done.insert(key).second && !v->second.empty()) lines.push_back(key + " " + v->second);
+        }
+    }
+    for (auto& [key, value] : values)
+        if (!done.count(key) && !value.empty()) lines.push_back(key + " " + value);
+    std::ofstream f(path);
+    for (auto& l : lines) f << l << "\n";
+    return (bool)f;
+}
+
+// The start at sign-in that "continuous" and "partial" have in WSA (the package's startup tasks): a Run value of the
+// current user that starts the client.
+static LSTATUS SetSignInStart(bool on)
+{
+    HKEY run;
+    LSTATUS rc = RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &run);
+    if (rc != ERROR_SUCCESS) return rc;
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    const std::wstring cmd = L"\"" + std::wstring(self) + L"\" --client";
+    rc = on ? RegSetValueExW(run, L"WsaRebornHost", 0, REG_SZ, (const BYTE*)cmd.c_str(), (DWORD)(cmd.size() + 1) * sizeof(wchar_t))
+            : RegDeleteValueW(run, L"WsaRebornHost");
+    if (rc == ERROR_FILE_NOT_FOUND) rc = ERROR_SUCCESS;
+    RegCloseKey(run);
+    return rc;
+}
+
+// "--lifecycle continuous|asneeded|partial": the "lifecycle" line of settings.txt and the start at sign-in.
 static int SetLifecycle(const wchar_t* mode)
 {
     int m = -1;
     for (int i = 0; i < 3; i++)
         if (Narrow(mode) == kLifecycleNames[i]) m = i;
     if (m < 0) { std::printf("lifecycle: continuous, asneeded or partial\n"); return 2; }
-    wchar_t self[MAX_PATH];
-    GetModuleFileNameW(nullptr, self, MAX_PATH);
-    std::wstring dir(self, wcsrchr(self, L'\\'));
-    std::vector<std::string> lines;
+    bool written = WriteSettings({{"lifecycle", kLifecycleNames[m]}});
+    LSTATUS rc = SetSignInStart(m != kAsNeeded);
+    std::printf("lifecycle %s: settings.txt %s, start at sign-in %s: %s\n", kLifecycleNames[m], written ? "written" : "NOT written",
+                m == kAsNeeded ? "removed" : "set", rc ? "FAILED" : "ok");
+    return rc || !written ? 1 : 0;
+}
+
+// "--settings": the settings window, as WSA's "Advanced settings" → "Memory and performance" (the owner's wish of
+// 15.10.2026): the resources mode, the idle time, the memory, the shared clipboard, the subsystem's state with "Turn
+// off". It edits settings.txt next to the exe through WriteSettings — what the client re-reads every 5 seconds — and the
+// start at sign-in as --lifecycle does. "--settings-test <lifecycle> <idle> <memory> <clipboard>" runs the same window
+// hidden, prints what it loaded, sets the controls, presses Save and prints the file: a check without a window on the
+// desktop. 16.10.2026.
+enum { kIdRadio = 100, kIdIdle = 110, kIdMemory = 111, kIdClip = 112, kIdState = 113, kIdTurnOff = 114, kIdSave = IDOK, kIdClose = IDCANCEL };
+static const wchar_t* const kLifecycleLabels[] = {
+    L"Continuous — the subsystem runs from sign-in and is always ready",
+    L"As needed — starts with an app, turns off when no app is open",
+    L"Partially running — starts at sign-in, restarts when no app is open"};
+static const int kMemoryGb[] = {2, 3, 4, 6, 8, 12, 16};  // the combo: [0] from config.json, [1] default, then these
+static bool g_settingsTest;  // --settings-test: messages to stdout, no message boxes
+
+static void SettingsMessage(HWND w, const wchar_t* text, UINT icon)
+{
+    if (g_settingsTest) std::printf("message: %ls\n", text);
+    else MessageBoxW(w, text, L"Settings", icon);
+}
+
+static int DefaultMemoryGb()
+{
+    MEMORYSTATUSEX ms{sizeof ms};
+    GlobalMemoryStatusEx(&ms);
+    const unsigned long long gb = 1ull << 30, ram = ms.ullTotalPhys;
+    return ram >= 12 * gb ? 6 : ram >= 8 * gb ? 4 : ram > 4 * gb ? 3 : 2;
+}
+
+// The settings.txt lines the window shows (ReadSettings fills the effective values, these the written ones).
+static std::map<std::string, std::string> ReadSettingLines()
+{
+    std::map<std::string, std::string> v;
+    std::ifstream f(ExeDir() + L"\\settings.txt");
+    for (std::string line; std::getline(f, line);)
     {
-        std::ifstream f(dir + L"\\settings.txt");
-        for (std::string l; std::getline(f, l);)
-            if (l.rfind("lifecycle", 0)) lines.push_back(l);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        std::istringstream in(line);
+        std::string key, value;
+        if ((in >> key >> value) && key[0] != '#' && !v.count(key)) v[key] = value;
     }
-    lines.push_back(std::string("lifecycle ") + kLifecycleNames[m]);
+    return v;
+}
+
+static void SettingsLoad(HWND w)
+{
+    g_userDir = ExeDir();
+    ReadSettings();
+    auto lines = ReadSettingLines();
+    for (int i = 0; i < 3; i++) Button_SetCheck(GetDlgItem(w, kIdRadio + i), g_lifecycle == i ? BST_CHECKED : BST_UNCHECKED);
+    wchar_t idle[32];
+    swprintf_s(idle, L"%g", g_idleMinutes);
+    SetDlgItemTextW(w, kIdIdle, idle);
+    int sel = 0;
+    if (lines.count("memory"))
     {
-        std::ofstream f(dir + L"\\settings.txt");
-        for (auto& l : lines) f << l << "\n";
+        sel = 1;
+        if (lines["memory"] != "default")
+            for (int i = 0; i < (int)std::size(kMemoryGb); i++)
+                if (std::atoi(lines["memory"].c_str()) == kMemoryGb[i]) sel = 2 + i;
     }
-    HKEY run;
-    LSTATUS rc = RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &run);
-    if (rc == ERROR_SUCCESS)
+    ComboBox_SetCurSel(GetDlgItem(w, kIdMemory), sel);
+    Button_SetCheck(GetDlgItem(w, kIdClip), g_clipSetting == 1 ? BST_CHECKED : BST_UNCHECKED);
+}
+
+static bool SettingsSave(HWND w)
+{
+    int m = kAsNeeded;
+    for (int i = 0; i < 3; i++)
+        if (Button_GetCheck(GetDlgItem(w, kIdRadio + i)) == BST_CHECKED) m = i;
+    wchar_t idle[32] = L"";
+    GetDlgItemTextW(w, kIdIdle, idle, 32);
+    double minutes = _wtof(idle);
+    if (minutes <= 0) { SettingsMessage(w, L"The idle time is a number of minutes above 0.", MB_ICONWARNING); return false; }
+    char idleText[32];
+    std::snprintf(idleText, sizeof idleText, "%g", minutes);
+    int sel = ComboBox_GetCurSel(GetDlgItem(w, kIdMemory));
+    std::string memory = sel <= 0 ? "" : sel == 1 ? "default" : std::to_string(kMemoryGb[sel - 2]);
+    bool ok = WriteSettings({{"lifecycle", kLifecycleNames[m]}, {"idle", idleText}, {"memory", memory},
+                             {"clipboard", Button_GetCheck(GetDlgItem(w, kIdClip)) == BST_CHECKED ? "on" : "off"}});
+    LSTATUS rc = SetSignInStart(m != kAsNeeded);
+    std::printf("settings: settings.txt %s, start at sign-in %s: %s\n", ok ? "written" : "NOT written", m == kAsNeeded ? "removed" : "set", rc ? "FAILED" : "ok");
+    if (!ok || rc) SettingsMessage(w, ok ? L"Cannot set the start at sign-in." : L"Cannot write settings.txt.", MB_ICONERROR);
+    return ok && !rc;
+}
+
+static void SettingsState(HWND w)
+{
+    const bool running = VmHalfRunning(), service = ServicePid() != 0;
+    SetDlgItemTextW(w, kIdState, running ? (service ? L"The subsystem is running." : L"The subsystem is running (not as the service).")
+                                         : L"The subsystem is off.");
+    EnableWindow(GetDlgItem(w, kIdTurnOff), service);
+}
+
+static LRESULT CALLBACK SettingsProc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg)
     {
-        std::wstring cmd = L"\"" + std::wstring(self) + L"\" --client";
-        rc = m == kAsNeeded ? RegDeleteValueW(run, L"WsaRebornHost")
-                            : RegSetValueExW(run, L"WsaRebornHost", 0, REG_SZ, (const BYTE*)cmd.c_str(), (DWORD)(cmd.size() + 1) * sizeof(wchar_t));
-        if (rc == ERROR_FILE_NOT_FOUND) rc = ERROR_SUCCESS;
-        RegCloseKey(run);
+    case WM_COMMAND:
+        switch (LOWORD(wp))
+        {
+        case kIdSave: if (SettingsSave(w)) SettingsLoad(w); return 0;
+        case kIdClose: DestroyWindow(w); return 0;
+        case kIdTurnOff: StopService(); SettingsState(w); return 0;
+        }
+        break;
+    case WM_TIMER: SettingsState(w); return 0;
+    case WM_CLOSE: DestroyWindow(w); return 0;
+    case WM_DESTROY: PostQuitMessage(0); return 0;
     }
-    std::printf("lifecycle %s: settings.txt written, start at sign-in %s: %s\n", kLifecycleNames[m], m == kAsNeeded ? "removed" : "set", rc ? "FAILED" : "ok");
-    return rc ? 1 : 0;
+    return DefWindowProcW(w, msg, wp, lp);
+}
+
+static HWND SettingsCreate(bool visible)
+{
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
+    const int dpi = (int)GetDpiForSystem();
+    auto px = [dpi](int v) { return MulDiv(v, dpi, 96); };
+    NONCLIENTMETRICSW nm{sizeof nm};
+    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof nm, &nm, 0);
+    HFONT font = CreateFontIndirectW(&nm.lfMessageFont);
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = SettingsProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+    wc.lpszClassName = L"WsaRebornHostSettings";
+    RegisterClassW(&wc);
+    RECT r{0, 0, px(520), px(370)};
+    const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    AdjustWindowRectExForDpi(&r, style, FALSE, 0, dpi);
+    HWND w = CreateWindowExW(0, wc.lpszClassName, L"WSA-Reborn host — settings", style, CW_USEDEFAULT, CW_USEDEFAULT,
+                             r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
+    auto add = [&](const wchar_t* cls, const wchar_t* text, DWORD st, int x, int y, int cx, int cy, int id) {
+        HWND c = CreateWindowExW(!wcscmp(cls, L"EDIT") ? WS_EX_CLIENTEDGE : 0, cls, text, WS_CHILD | WS_VISIBLE | st, px(x), px(y), px(cx), px(cy), w,
+                                 (HMENU)(INT_PTR)id, wc.hInstance, nullptr);
+        SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE);
+        return c;
+    };
+    add(L"BUTTON", L"Resources", BS_GROUPBOX, 12, 8, 496, 112, -1);
+    for (int i = 0; i < 3; i++)
+        add(L"BUTTON", kLifecycleLabels[i], BS_AUTORADIOBUTTON | WS_TABSTOP | (i ? 0 : WS_GROUP), 24, 30 + i * 28, 476, 24, kIdRadio + i);
+    add(L"STATIC", L"Turn off or restart after no app window for (minutes):", SS_LEFT, 12, 136, 340, 20, -1);
+    add(L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP, 360, 132, 80, 24, kIdIdle);
+    add(L"STATIC", L"Memory (applies at the next start):", SS_LEFT, 12, 172, 340, 20, -1);
+    HWND combo = add(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 360, 168, 148, 200, kIdMemory);
+    wchar_t text[64];
+    SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)L"From config.json");
+    swprintf_s(text, L"Default (%d GB)", DefaultMemoryGb());
+    SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)text);
+    for (int gb : kMemoryGb) swprintf_s(text, L"%d GB", gb), SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)text);
+    add(L"BUTTON", L"Shared clipboard with Windows", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 206, 496, 24, kIdClip);
+    add(L"STATIC", L"", SS_LEFT, 12, 252, 340, 20, kIdState);
+    add(L"BUTTON", L"Turn off", BS_PUSHBUTTON | WS_TABSTOP, 360, 246, 148, 30, kIdTurnOff);
+    add(L"STATIC", L"Saved settings apply to a running client within seconds.", SS_LEFT, 12, 296, 496, 20, -1);
+    add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON | WS_TABSTOP, 252, 328, 124, 30, kIdSave);
+    add(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, 384, 328, 124, 30, kIdClose);
+    SettingsLoad(w);
+    SettingsState(w);
+    SetTimer(w, 1, 2000, nullptr);
+    if (visible) ShowWindow(w, SW_SHOWNORMAL);
+    return w;
+}
+
+static int SettingsWindow()
+{
+    if (HWND old = FindWindowW(L"WsaRebornHostSettings", nullptr)) { ShowWindow(old, SW_RESTORE); SetForegroundWindow(old); return 0; }
+    // Started from a shortcut, the console exe gets a console of its own: drop it (a shell's console is shared — keep).
+    DWORD pids[2];
+    if (GetConsoleProcessList(pids, 2) == 1) FreeConsole();
+    HWND w = SettingsCreate(true);
+    for (MSG m; GetMessageW(&m, nullptr, 0, 0) > 0;)
+        if (!IsDialogMessageW(w, &m)) TranslateMessage(&m), DispatchMessageW(&m);
+    return 0;
+}
+
+static int SettingsTest(int argc, wchar_t** argv)
+{
+    if (argc < 6) { std::printf("--settings-test <lifecycle> <idle> <memory: config|default|GB> <clipboard on|off>\n"); return 2; }
+    g_settingsTest = true;
+    HWND w = SettingsCreate(false);
+    auto show = [&](const char* when) {
+        int m = -1;
+        for (int i = 0; i < 3; i++)
+            if (Button_GetCheck(GetDlgItem(w, kIdRadio + i)) == BST_CHECKED) m = i;
+        wchar_t idle[32], mem[64], state[128];
+        GetDlgItemTextW(w, kIdIdle, idle, 32);
+        HWND combo = GetDlgItem(w, kIdMemory);
+        SendMessageW(combo, CB_GETLBTEXT, ComboBox_GetCurSel(combo), (LPARAM)mem);
+        GetDlgItemTextW(w, kIdState, state, 128);
+        std::printf("%s: lifecycle %s, idle %ls, memory %ls, clipboard %s; %ls (Turn off %s)\n", when, m < 0 ? "-" : kLifecycleNames[m], idle, mem,
+                    Button_GetCheck(GetDlgItem(w, kIdClip)) == BST_CHECKED ? "on" : "off", state,
+                    IsWindowEnabled(GetDlgItem(w, kIdTurnOff)) ? "enabled" : "disabled");
+    };
+    show("loaded");
+    const std::string mode = Narrow(argv[2]), memory = Narrow(argv[4]);
+    for (int i = 0; i < 3; i++) Button_SetCheck(GetDlgItem(w, kIdRadio + i), mode == kLifecycleNames[i] ? BST_CHECKED : BST_UNCHECKED);
+    SetDlgItemTextW(w, kIdIdle, argv[3]);
+    int sel = memory == "config" ? 0 : memory == "default" ? 1 : -1;
+    for (int i = 0; i < (int)std::size(kMemoryGb); i++)
+        if (std::atoi(memory.c_str()) == kMemoryGb[i]) sel = 2 + i;
+    ComboBox_SetCurSel(GetDlgItem(w, kIdMemory), sel);
+    Button_SetCheck(GetDlgItem(w, kIdClip), !wcscmp(argv[5], L"on") ? BST_CHECKED : BST_UNCHECKED);
+    SendMessageW(w, WM_COMMAND, MAKEWPARAM(kIdSave, BN_CLICKED), 0);
+    show("saved");
+    std::ifstream f(ExeDir() + L"\\settings.txt");
+    std::printf("settings.txt:\n%s", std::string(std::istreambuf_iterator<char>(f), {}).c_str());
+    DestroyWindow(w);
+    return 0;
 }
 
 int wmain(int argc, wchar_t** argv)
 {
     if (argc == 3 && !wcscmp(argv[1], L"--launch")) return LaunchApp(argv[2]);
     if (argc == 3 && !wcscmp(argv[1], L"--lifecycle")) return SetLifecycle(argv[2]);
+    if (argc == 2 && !wcscmp(argv[1], L"--settings")) return SettingsWindow();
+    if (argc >= 2 && !wcscmp(argv[1], L"--settings-test")) return SettingsTest(argc, argv);
     if (argc == 2 && !wcscmp(argv[1], L"--networks")) return ListNetworks();
     if (argc >= 4 && !wcscmp(argv[1], L"--config"))
         return MakeConfig(Narrow(argv[2]), Narrow(argv[3]), argc > 4 ? _wtoi(argv[4]) : 4096, argc > 5 ? _wtoi(argv[5]) : 4);
@@ -3689,7 +3932,7 @@ int wmain(int argc, wchar_t** argv)
         SERVICE_TABLE_ENTRYW table[] = {{(LPWSTR)kSvcName, SvcMain}, {nullptr, nullptr}};
         return StartServiceCtrlDispatcherW(table) ? 0 : 1;
     }
-    if (argc < 2) { std::printf("usage: wsa-reborn-host <config.json> [adb-port] [console-log] | --client [adb-port] | --launch <package> | --lifecycle <mode> | --config <install-dir> <data-dir> [mem-MB] [cpus] | --networks | --install [folder] | --uninstall | --stop\n"); return 2; }
+    if (argc < 2) { std::printf("usage: wsa-reborn-host <config.json> [adb-port] [console-log] | --client [adb-port] | --launch <package> | --lifecycle <mode> | --settings | --config <install-dir> <data-dir> [mem-MB] [cpus] | --networks | --install [folder] | --uninstall | --stop\n"); return 2; }
     setvbuf(stdout, nullptr, _IONBF, 0);
     SetConsoleCtrlHandler(OnCtrl, TRUE);
     return RunVm(argv[1], argc > 2 ? (unsigned short)_wtoi(argv[2]) : 58600, argc > 3 ? Narrow(argv[3]) : "wsa-reborn-host-console.log");
