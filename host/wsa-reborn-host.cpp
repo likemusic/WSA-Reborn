@@ -784,7 +784,8 @@ static HRESULT CALLBACK HdvTestWriteMmio(PVOID, HDV_PCI_BAR_SELECTOR bar, UINT64
 // ---- gfxstream host backend (stream_renderer_* of gfxstream_backend.dll) ---------------------------------------
 // The API crosvm/rutabaga feed virtio-gpu 3D into (AOSP gfxstream, mid-2023 header
 // host/include/gfxstream/virtio-gpu-gfxstream-renderer.h); WSA's package ships it as gfxstream_backend.dll and WsaClient
-// initialises it with flags 0x11 (EGL | GLES; 0x31 / 0x831 = + NO_VK / + SYSTEM_BLOB in its other graphics modes, + 1<<9
+// initialises it with flags 0x11 (EGL | GLES; 0x31 / 0x831 in its other graphics modes — 0x20 is USE_VK: with 0x31 and
+// VIRTIO_GPU_F_CONTEXT_INIT the guest's Vulkan sees the host GPU, checked 16.10.2026; 0x800 not checked, + 1<<9
 // GLES 3.1), USER_DATA 0, an empty FENCE_CALLBACK and window 1x1, after gfxstream_set_d3d_device (read in WsaClient.exe
 // 2407.40000.4.0 at 0x1400a72ba, 16.10.2026). The library is loaded at run time from the user's WSA folder, as
 // wsldevicehost.dll.
@@ -1054,13 +1055,14 @@ static void HdvGpuReadbackAll()
     }
 }
 static UINT32 g_hdvGpuBar = 0xFFFFF000, g_hdvGpuVendor = 0x1af4;  // "hdv gpu <model> bar=<host value> vendor=<id>" (bisecting)
-static UINT32 g_hdvGpuBars[6] = {};
-static bool g_hdvGpuShmTest = false;
-static bool g_hdvGpu3d = false;
-static bool g_hdvGpuFences = true;              // "nofences": answer fenced commands at once (as WsaClient), see GfxstreamFence                 // "gfxstream=<WSA folder>": 3D through stream_renderer_* of its gfxstream_backend.dll
+static UINT32 g_hdvGpuBars[6] = {};              // "barN=<host value>" for N = 1..5 (bisecting the BAR the host-visible window needs)
+static bool g_hdvGpuShmTest = false;           // "shmtest": a 2 MiB section at BAR2+0 (the way blob resources reach the guest)
+static bool g_hdvGpu3d = false;                 // "gfxstream=<WSA folder>": 3D through stream_renderer_* of its gfxstream_backend.dll
+static bool g_hdvGpuCtxInit = true;             // VIRTIO_GPU_F_CONTEXT_INIT (guest Vulkan, vulkan.ranchu, needs it); "noctxinit" — off
+static bool g_hdvGpuFences = true;              // "nofences": answer fenced commands at once (as WsaClient), see GfxstreamFence
 static std::wstring g_hdvGpuGfxDir;
-static UINT64 g_hdvGpuGfxFlags = 0x811;         // "flags=<hex>": EGL | GLES | SYSTEM_BLOB (host-visible blobs as sections)  // "shmtest": a 2 MiB section at BAR2+0 (the way blob resources reach the guest)
-static BYTE* g_hdvGpuShm = nullptr;  // "barN=<host value>" for N = 1..5 (bisecting the BAR the host-visible window needs)
+static UINT64 g_hdvGpuGfxFlags = 0x31;          // "flags=<hex>": EGL | GLES | USE_VK (WsaClient with VulkanDriver "system")
+static BYTE* g_hdvGpuShm = nullptr;
 static const GUID kHdvGpuClass = {0x7c1e5b2c, 0x9d43, 0x4f1e, {0x8a, 0x52, 0x3b, 0x6d, 0x91, 0x0e, 0x57, 0x53}};
 static const GUID kHdvGpuInstance = {0x7c1e5b2d, 0x9d43, 0x4f1e, {0x8a, 0x52, 0x3b, 0x6d, 0x91, 0x0e, 0x57, 0x53}};
 static const UINT64 kVirtioFVersion1 = 1ULL << 32;
@@ -1142,7 +1144,9 @@ static void HdvGpuCommonBytes(HdvGpu& d, BYTE* b)
     auto put32 = [&](int o, UINT32 v) { std::memcpy(b + o, &v, 4); };
     auto put64 = [&](int o, UINT64 v) { std::memcpy(b + o, &v, 8); };
     put32(0x00, d.dfSelect);
-    put32(0x04, d.dfSelect == 1 ? (UINT32)(kVirtioFVersion1 >> 32) : d.dfSelect == 0 && g_hdvGpu3d ? (1u << 0 | 1u << 3) /* VIRGL, RESOURCE_BLOB */ : 0);
+    put32(0x04, d.dfSelect == 1 ? (UINT32)(kVirtioFVersion1 >> 32)
+                : d.dfSelect == 0 && g_hdvGpu3d ? (1u << 0 | 1u << 3 | (g_hdvGpuCtxInit ? 1u << 4 : 0)) /* VIRGL, RESOURCE_BLOB, CONTEXT_INIT */
+                : 0);
     put32(0x08, d.drfSelect);
     put32(0x0c, d.drfSelect < 2 ? d.driverFeatures[d.drfSelect] : 0);
     put16(0x10, d.configMsix);
@@ -1692,6 +1696,7 @@ static void HdvInit()
                 if (o.rfind("bar=", 0) == 0) g_hdvGpuBar = std::stoul(o.substr(4), nullptr, 16);
                 if (o == "shmtest") g_hdvGpuShmTest = true;
                 if (o == "nofences") g_hdvGpuFences = false;
+                if (o == "noctxinit") g_hdvGpuCtxInit = false;
                 if (o.rfind("gfxstream=", 0) == 0) g_hdvGpuGfxDir = Widen(o.substr(10));
                 if (o.rfind("flags=", 0) == 0) g_hdvGpuGfxFlags = std::stoull(o.substr(6), nullptr, 16);
                 if (o.rfind("vendor=", 0) == 0) g_hdvGpuVendor = std::stoul(o.substr(7), nullptr, 16);

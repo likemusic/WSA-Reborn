@@ -8,7 +8,7 @@ Everything else in WSA-Reborn keeps Microsoft's host: `WsaService.exe` starts th
 
 **Status: experimental.** It boots Android 16 to the home screen and runs apps in their own windows, alongside a running stock WSA. Rendering is in software: the guest has no GPU (SwiftShader + ANGLE inside Android, frames sent to the host over vsock), so it is fine for ordinary apps and automated tests and slow for games and video. Tested with an Android 16 system image (`aosp16`) on Windows 11 x64.
 
-Hardware graphics is there too, as an experiment: the host's own virtio-gpu runs the guest's OpenGL ES on your GPU through WSA's own renderer (see [Hardware graphics](#hardware-graphics-experimental)). Not done yet: Vulkan on the GPU, running the GPU from the service (it works from the agent), registering `wsa://` and Start-menu entries (shortcuts are made in the host folder instead). Android's sound plays on Windows' default output device; the microphone is used only when `settings.txt` says so.
+Hardware graphics is there too, as an experiment: the host's own virtio-gpu runs the guest's OpenGL ES and Vulkan on your GPU through WSA's own renderer (see [Hardware graphics](#hardware-graphics-experimental)). Not done yet: running the GPU from the service (it works from the agent), registering `wsa://` and Start-menu entries (shortcuts are made in the host folder instead). Android's sound plays on Windows' default output device; the microphone is used only when `settings.txt` says so.
 
 ## How it fits together
 
@@ -136,11 +136,11 @@ The host can give the VM its own virtio-gpu (a PCI device emulated through the d
    ```
 3. Point the vendor disk of `config.json` at `vendor-gpu.vhdx` and add to `shares.txt`:
    ```
-   hdv gpu External gfxstream=C:\WSA flags=11
+   hdv gpu External gfxstream=C:\WSA
    ```
-   (`flags=11` are the renderer flags `WsaClient` uses: EGL and GLES.)
+   The renderer flags default to `31` — EGL, GLES and Vulkan, what `WsaClient` uses with WSA's Vulkan driver setting at "system": the guest's Vulkan sees your GPU through its own driver, and ANGLE can run apps' OpenGL ES over it. `flags=11` leaves Vulkan out (stock WSA's default).
 
-Frames and task windows then arrive exactly as with the software vendor; an app reports `GL_VENDOR=Microsoft, GL_RENDERER=Subsystem OpenGL ES Translator`. The composer reads every frame back from the GPU (`TRANSFER_FROM_HOST` of virtio-gpu), which costs a copy per frame — fine for apps and tests, not tuned for games. Fenced commands are answered when the renderer reports them done, as crosvm does (`nofences` on the `hdv` line answers at once, as `WsaClient` does). `testapps/ahbinfo` prints what a gralloc buffer of this stack looks like. So far tested from the agent (development mode), not from the service.
+Frames and task windows then arrive exactly as with the software vendor; an app reports `GL_VENDOR=Microsoft, GL_RENDERER=Subsystem OpenGL ES Translator` (OpenGL ES 3.0), `testapps/vkprobe` lists your GPU with Vulkan 1.3. The composer reads every frame back from the GPU (`TRANSFER_FROM_HOST` of virtio-gpu), which costs a copy per frame — fine for apps and tests, not tuned for games. Fenced commands are answered when the renderer reports them done, as crosvm does (`nofences` on the `hdv` line answers at once, as `WsaClient` does). `testapps/ahbinfo` prints what a gralloc buffer of this stack looks like. So far tested from the agent (development mode), not from the service.
 
 ## Command port
 

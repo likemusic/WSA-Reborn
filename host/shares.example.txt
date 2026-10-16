@@ -12,11 +12,13 @@ shared_tombstone files <host folder>\share\shared_tombstone
 # nic <HCN network id> <ip>/<prefix> <gateway>   — e.g. "Default Switch"; ids differ per machine (Default Switch is c08cb7b8-… everywhere), "wsa-reborn-host.exe --networks" lists them;
 #     the address is moved into the network's current subnet (ICS subnets change across reboots), gateway taken from HCN
 # hdv test [<HostingModel>]   — an own PCI test device through the HDV API (BAR0 registers, guest memory reads); testapps/pcimmio
-# hdv gpu [<HostingModel>] [gfxstream=<WSA folder>] [flags=<hex>] [nofences]
+# hdv gpu [<HostingModel>] [gfxstream=<WSA folder>] [flags=<hex>] [nofences] [noctxinit]
 #                             — an own virtio-gpu (virtio-pci on HDV). Without gfxstream= — 2D only (testapps/drmfill shows a
 #                               picture, the host keeps hdv-gpu.bmp); not for the headless vendor: its minigbm switches to the
-#                               virtgpu backend and CPU lock() fails there. With gfxstream=C:\WSA flags=11 — 3D through
+#                               virtgpu backend and CPU lock() fails there. With gfxstream=C:\WSA — 3D through
 #                               WSA's gfxstream_backend.dll for Microsoft's own vendor.vhdx (GPU rendering in the guest); shown in
 #                               Windows with vendor-gpu.vhdx from bin/hwc-vendor.sh (Microsoft's vendor with our HWC2 as the
 #                               composer: frames and task windows as for the headless vendor). Fenced commands are answered when
-#                               the renderer calls back; nofences answers them at once, as WsaClient does
+#                               the renderer calls back; nofences answers them at once, as WsaClient does. flags default to 31
+#                               (EGL | GLES | USE_VK, WsaClient's VulkanDriver "system": guest Vulkan on the host GPU, ANGLE
+#                               over it), 11 without Vulkan; noctxinit drops VIRTIO_GPU_F_CONTEXT_INIT (guest Vulkan needs it)
