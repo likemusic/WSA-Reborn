@@ -812,6 +812,7 @@ struct GfxstreamApi
     int (*resource_map)(UINT32, void**, UINT64*) = nullptr;
     int (*resource_unmap)(UINT32) = nullptr;
     int (*resource_map_info)(UINT32, UINT32*) = nullptr;
+    int (*create_fence)(const stream_renderer_fence*) = nullptr;
     bool Load(const std::wstring& dir)
     {
         SetDllDirectoryW(dir.c_str());
@@ -836,6 +837,7 @@ struct GfxstreamApi
         resource_map = (decltype(resource_map))GetProcAddress(dll, "stream_renderer_resource_map");
         resource_unmap = (decltype(resource_unmap))GetProcAddress(dll, "stream_renderer_resource_unmap");
         resource_map_info = (decltype(resource_map_info))GetProcAddress(dll, "stream_renderer_resource_map_info");
+        create_fence = (decltype(create_fence))GetProcAddress(dll, "stream_renderer_create_fence");
         return init && get_cap_set && fill_caps && context_create && resource_create && submit_cmd && attach_iov && create_blob;
     }
 };
@@ -884,7 +886,53 @@ static HANDLE LatteSection(void* p, UINT64* offset)
     *offset = off;
     return it->second.first;
 }
-static void GfxstreamFence(void*, stream_renderer_fence* f) { std::printf("gfxstream: fence %llu ctx %u\n", f ? f->fence_id : 0, f ? f->ctx_id : 0); }
+// Host: a file "dump-blobs.req" in the host folder makes every latte section of at least 1 MiB go to
+// blob-<n>-<size>.bmp, read as 1280 px wide RGBA rows (do the gralloc buffers hold the rendered pixels?).
+static void HdvGpuReadbackAll();
+static void LatteDumpLoop()
+{
+    for (;;)
+    {
+        Sleep(1000);
+        if (!DeleteFileW(UserFile(L"dump-blobs.req").c_str())) continue;
+        HdvGpuReadbackAll();
+        std::lock_guard<std::mutex> l(g_latteLock);
+        int n = 0;
+        for (auto& e : g_latte)
+        {
+            if (e.second.second < (1 << 20)) continue;
+            UINT32 w = 1280, h = (UINT32)(e.second.second / (w * 4));
+            std::vector<BYTE> px((size_t)w * h * 4);
+            const BYTE* s = (const BYTE*)e.first;
+            for (size_t i = 0; i < px.size(); i += 4) { px[i] = s[i + 2]; px[i + 1] = s[i + 1]; px[i + 2] = s[i]; px[i + 3] = 255; }
+            BITMAPFILEHEADER fh{};
+            BITMAPINFOHEADER ih{sizeof ih, (LONG)w, -(LONG)h, 1, 32, BI_RGB};
+            fh.bfType = 0x4d42; fh.bfOffBits = sizeof fh + sizeof ih; fh.bfSize = fh.bfOffBits + (DWORD)px.size();
+            std::ofstream o(UserFile(L"blob-" + std::to_wstring(n++) + L"-" + std::to_wstring(e.second.second) + L".bmp"), std::ios::binary);
+            o.write((char*)&fh, sizeof fh); o.write((char*)&ih, sizeof ih); o.write((char*)px.data(), px.size());
+        }
+        std::printf("latte: dumped %d sections\n", n);
+    }
+}
+
+// Fences (16.10.2026): a command the guest fences (VIRTIO_GPU_FLAG_FENCE) is answered only when the renderer reports
+// the fence done through FENCE_CALLBACK, as crosvm does; the guest driver signals every fence up to the answered id.
+// Until then the guest's acquire fences meant nothing: a buffer was read back before the host had drawn it (the
+// composer showed a frame some seconds old). The callback runs on a renderer thread: it only records the id.
+static std::mutex g_fenceLock;
+static std::vector<UINT64> g_fencesDone;
+static std::atomic<bool> g_fencesSignalled{false};
+static void HdvGpuKickFences();
+static void GfxstreamFence(void*, stream_renderer_fence* f)
+{
+    if (!f) return;
+    {
+        std::lock_guard<std::mutex> l(g_fenceLock);
+        g_fencesDone.push_back(f->fence_id);
+    }
+    g_fencesSignalled = true;
+    HdvGpuKickFences();
+}
 
 // A crash inside the renderer: module and offset of the faulting address, for the disassembler.
 static LONG WINAPI GfxstreamCrash(EXCEPTION_POINTERS* e)
@@ -918,6 +966,7 @@ static int GfxstreamInit(UINT64 flags)
     static LatteOps ops = {LatteAlloc, LatteFree, LatteOpen};
     auto setLatte = (void (*)(LatteOps*))GetProcAddress(g_gfx.dll, "gfxstream_set_latte_operations");
     if (setLatte) setLatte(&ops);
+    std::thread(LatteDumpLoop).detach();
     stream_renderer_param p[] = {{2, flags}, {1, 0}, {3, (UINT64)(uintptr_t)&GfxstreamFence}, {4, 1}, {5, 1}};
     int r = g_gfx.init(p, 5);
     std::printf("gfxstream: stream_renderer_init flags 0x%llx: %d\n", flags, r);
@@ -984,12 +1033,31 @@ struct HdvGpu
     std::condition_variable kick;
     UINT32 pending = 0;  // bit per queue
     bool stop = false;
+    // Fenced answers of the control queue held back until the renderer's fence callback: fence id -> used entries.
+    struct Held { UINT16 head; UINT32 written; ULONGLONG since; };
+    std::map<UINT64, std::vector<Held>> held;
+    UINT64 fencesCreated = 0, fencesForced = 0;
 };
 static HdvGpu g_hdvGpu;
+static std::map<UINT32, UINT64> g_hdvGpuBlobSizes;  // host: mapped host-visible blobs, resource -> size
+
+// Host: TRANSFER_FROM_HOST of every mapped blob of a frame's size (as Microsoft's mapper does on lock), before the dump.
+static void HdvGpuReadbackAll()
+{
+    std::lock_guard<std::mutex> l(g_hdvGpu.lock);
+    for (auto& b : g_hdvGpuBlobSizes)
+    {
+        if (b.second < (1 << 20) || !g_gfx.transfer_read_iov) continue;
+        UINT32 box[6] = {0, 0, 0, 1280, 800, 1};
+        int r = g_gfx.transfer_read_iov(b.first, 0, 0, 0, 0, box, 0, nullptr, 0);
+        std::printf("host: readback of blob %u (%llu): %d\n", b.first, b.second, r);
+    }
+}
 static UINT32 g_hdvGpuBar = 0xFFFFF000, g_hdvGpuVendor = 0x1af4;  // "hdv gpu <model> bar=<host value> vendor=<id>" (bisecting)
 static UINT32 g_hdvGpuBars[6] = {};
 static bool g_hdvGpuShmTest = false;
-static bool g_hdvGpu3d = false;                 // "gfxstream=<WSA folder>": 3D through stream_renderer_* of its gfxstream_backend.dll
+static bool g_hdvGpu3d = false;
+static bool g_hdvGpuFences = true;              // "nofences": answer fenced commands at once (as WsaClient), see GfxstreamFence                 // "gfxstream=<WSA folder>": 3D through stream_renderer_* of its gfxstream_backend.dll
 static std::wstring g_hdvGpuGfxDir;
 static UINT64 g_hdvGpuGfxFlags = 0x811;         // "flags=<hex>": EGL | GLES | SYSTEM_BLOB (host-visible blobs as sections)  // "shmtest": a 2 MiB section at BAR2+0 (the way blob resources reach the guest)
 static BYTE* g_hdvGpuShm = nullptr;  // "barN=<host value>" for N = 1..5 (bisecting the BAR the host-visible window needs)
@@ -1285,6 +1353,7 @@ static bool HdvGpu3d(HdvGpu& d, UINT32 type, UINT32 ctx, const std::vector<BYTE>
     case 0x0102:  // RESOURCE_UNREF
     {
         UINT32 res = u32(24);
+        g_hdvGpuBlobSizes.erase(res);
         auto m = d.blobMaps.find(res);
         if (m != d.blobMaps.end()) { HdvDestroySectionBackedMmioRange(d.handle, HDV_PCI_BAR2, m->second / 4096); d.blobMaps.erase(m); }
         // Only unref, as crosvm: detach_iov on a host blob frees memory the renderer never allocated (CRT free of a
@@ -1366,6 +1435,7 @@ static bool HdvGpu3d(HdvGpu& d, UINT32 type, UINT32 ctx, const std::vector<BYTE>
             std::printf("hdv gpu: map blob %u at BAR2+0x%llx: export %d (handle 0x%llx type %u), map %p size %llu, info 0x%x, section: 0x%08lx\n", res, offset, r, h.os_handle, h.handle_type, hva, size, info, hr);
         if (FAILED(hr)) { outType = 0x1200; return true; }
         d.blobMaps[res] = offset;
+        g_hdvGpuBlobSizes[res] = size;
         UINT32 mi[2] = {info, 0};
         resp.resize(24 + sizeof mi);
         std::memcpy(resp.data() + 24, mi, sizeof mi);
@@ -1497,6 +1567,15 @@ static UINT32 HdvGpuCommand(HdvGpu& d, const std::vector<BYTE>& req, std::vector
     return (UINT32)resp.size();
 }
 
+static void HdvGpuUsed(HdvGpu& d, HdvGpu::Queue& q, UINT16 head, UINT32 written)
+{
+    UINT32 used[2] = {head, written};
+    HdvWriteGuestMemory(d.handle, q.used + 4 + 8 * (q.usedIdx % q.size), 8, (BYTE*)used);
+    q.usedIdx++;
+    MemoryBarrier();
+    HdvWriteGuestMemory(d.handle, q.used + 2, 2, (BYTE*)&q.usedIdx);
+}
+
 static void HdvGpuProcess(HdvGpu& d, UINT32 qi)
 {
     auto& q = d.q[qi];
@@ -1531,14 +1610,49 @@ static void HdvGpuProcess(HdvGpu& d, UINT32 qi)
             HdvWriteGuestMemory(d.handle, w.addr, part, resp.data() + written);
             written += part;
         }
-        UINT32 used[2] = {head, written};
-        HdvWriteGuestMemory(d.handle, q.used + 4 + 8 * (q.usedIdx % q.size), 8, (BYTE*)used);
-        q.usedIdx++;
-        MemoryBarrier();
-        HdvWriteGuestMemory(d.handle, q.used + 2, 2, (BYTE*)&q.usedIdx);
+        // A fenced 3D command: its answer waits for the renderer (GfxstreamFence), unless fences are off.
+        UINT32 hflags = 0;
+        UINT64 fence = 0;
+        if (n >= 24) { std::memcpy(&hflags, resp.data() + 4, 4); std::memcpy(&fence, resp.data() + 8, 8); }
+        if (qi == 0 && g_hdvGpu3d && g_hdvGpuFences && g_gfx.create_fence && (hflags & 1))
+        {
+            d.held[fence].push_back({head, written, GetTickCount64()});
+            stream_renderer_fence f{hflags & 3, fence, req.size() >= 24 ? *(UINT32*)(req.data() + 16) : 0, req.size() >= 25 ? req[20] : (BYTE)0};
+            int r = g_gfx.create_fence(&f);
+            if (d.fencesCreated++ < 5 || r) std::printf("hdv gpu: fence %llu ctx %u: create %d\n", fence, f.ctx_id, r);
+            if (r == 0) continue;
+            d.held[fence].pop_back();
+            if (d.held[fence].empty()) d.held.erase(fence);
+        }
+        HdvGpuUsed(d, q, head, written);
         any = true;
     }
     if (any) HdvGpuInterrupt(d, q.msix);
+}
+
+// Answers held for fences the renderer reported done; after 500 ms a fence is answered anyway (a renderer that never
+// calls back must not hang the guest).
+static void HdvGpuFlushFences(HdvGpu& d)
+{
+    std::vector<UINT64> done;
+    {
+        std::lock_guard<std::mutex> l(g_fenceLock);
+        done.swap(g_fencesDone);
+    }
+    g_fencesSignalled = false;
+    bool any = false;
+    ULONGLONG now = GetTickCount64();
+    for (auto it = d.held.begin(); it != d.held.end();)
+    {
+        bool isDone = std::find(done.begin(), done.end(), it->first) != done.end();
+        bool late = !isDone && now - it->second.front().since > 500;
+        if (!isDone && !late) { ++it; continue; }
+        if (late && d.fencesForced++ < 5) std::printf("hdv gpu: fence %llu not called back in 500 ms, answered anyway\n", it->first);
+        for (auto& h : it->second) HdvGpuUsed(d, d.q[0], h.head, h.written);
+        any = true;
+        it = d.held.erase(it);
+    }
+    if (any) HdvGpuInterrupt(d, d.q[0].msix);
 }
 
 static void HdvGpuWorker()
@@ -1547,13 +1661,18 @@ static void HdvGpuWorker()
     std::unique_lock<std::mutex> l(d.lock);
     while (!d.stop)
     {
-        d.kick.wait(l, [&] { return d.pending || d.stop; });
+        auto ready = [&] { return d.pending || d.stop || g_fencesSignalled.load(); };
+        if (d.held.empty()) d.kick.wait(l, ready);
+        else d.kick.wait_for(l, std::chrono::milliseconds(50), ready);
         UINT32 p = d.pending;
         d.pending = 0;
         for (UINT32 qi = 0; qi < 2; qi++)
             if (p & 1u << qi) HdvGpuProcess(d, qi);
+        if (!d.held.empty() || g_fencesSignalled) HdvGpuFlushFences(d);
     }
 }
+
+static void HdvGpuKickFences() { g_hdvGpu.kick.notify_all(); }
 
 // Before the VM starts: the device host belongs to the compute system. "hdv <test|gpu> [<HostingModel>]" lines.
 static std::vector<std::pair<std::string, std::string>> g_hdvDevices;  // kind, hosting model
@@ -1572,6 +1691,7 @@ static void HdvInit()
             {
                 if (o.rfind("bar=", 0) == 0) g_hdvGpuBar = std::stoul(o.substr(4), nullptr, 16);
                 if (o == "shmtest") g_hdvGpuShmTest = true;
+                if (o == "nofences") g_hdvGpuFences = false;
                 if (o.rfind("gfxstream=", 0) == 0) g_hdvGpuGfxDir = Widen(o.substr(10));
                 if (o.rfind("flags=", 0) == 0) g_hdvGpuGfxFlags = std::stoull(o.substr(6), nullptr, 16);
                 if (o.rfind("vendor=", 0) == 0) g_hdvGpuVendor = std::stoul(o.substr(7), nullptr, 16);
@@ -3965,13 +4085,30 @@ static void SaveBmp(const std::string& name, const std::vector<unsigned char>& b
     f.write((const char*)bgrx.data(), bgrx.size());
 }
 
-// Also task-<id>.bmp per task window.
+// Also task-<id>.bmp per task window. Written every 10 s while frames come and once more 1 s after the last one
+// (FrameBmpIdle): saved only on a frame's arrival, the last frames before the screen settles never reached the file,
+// and frame.bmp showed a picture seconds old (taken for a stale readback, 16.10.2026).
+static std::atomic<unsigned long long> g_frameLastAt{0};
+static unsigned long long g_frameSavedNo = 0;
 static void SaveFrameBmp()
 {
     std::lock_guard<std::mutex> l(g_frameLock);
+    g_frameSavedNo = g_framesShown;
     if (g_frameW && g_frameH) SaveBmp("frame.bmp", g_frame, g_frameW, g_frameH);
     for (auto& [id, t] : g_tasks)
         if (t.pw) SaveBmp("task-" + std::to_string(id) + ".bmp", t.bgrx, t.pw, t.ph);
+}
+
+static void FrameBmpIdle()
+{
+    for (;;)
+    {
+        Sleep(500);
+        unsigned long long at = g_frameLastAt;
+        bool unsaved;
+        { std::lock_guard<std::mutex> l(g_frameLock); unsaved = g_framesShown != g_frameSavedNo; }
+        if (at && unsaved && GetTickCount64() - at >= 1000) SaveFrameBmp();
+    }
 }
 
 // AB24/XB24 (bytes R,G,B,A) -> BGRX; AR24/XR24 copied.
@@ -4077,6 +4214,7 @@ static void FrameConn(SOCKET c)
             t0 = GetTickCount64();
             n0 = n;
         }
+        g_frameLastAt = GetTickCount64();
     }
     std::printf("frames: guest went away (%d)\n", WSAGetLastError());
     closesocket(c);
@@ -4091,6 +4229,7 @@ static void FrameListen()
     hv.ServiceId = VsockService(kFramePort);
     if (bind(l, (sockaddr*)&hv, sizeof hv) || listen(l, 4)) { std::printf("frames: cannot listen on hvsocket %u (%d)\n", kFramePort, WSAGetLastError()); return; }
     std::thread(FrameWindowThread).detach();
+    std::thread(FrameBmpIdle).detach();
     std::thread([l] {
         for (SOCKET c; (c = accept(l, nullptr, nullptr)) != INVALID_SOCKET;) std::thread(FrameConn, c).detach();
     }).detach();
@@ -4114,6 +4253,7 @@ static void FrameListen()
 //   naction <i> [reply]    as button <i> of the last notification's toast, with the reply typed into its text box
 //   ndismiss               as swiping the last notification's toast away (Dismissal to the guest)
 //   tclose <task>          close the task's window (WM_CLOSE: Shell RemoveWindow to the guest)
+//   snap                   frame.bmp and task-<id>.bmp now (they are also written every 10 s while frames come)
 //   tmove <task> <x> <y>   move the task's window so its client area starts at work-area px x,y, then end of a move
 //                          (WM_EXITSIZEMOVE: Shell UpdateAndroidWindow to the guest)
 // and answers "ok <requests sent so far>" or an error. The window must not be minimized (client area = scale).
@@ -4141,6 +4281,13 @@ static void InputControl(unsigned short port)
             { std::lock_guard<std::mutex> lk(g_frameLock); fw = g_frameW; fh = g_frameH; }
             if (g_frameWnd) GetClientRect(g_frameWnd, &rc);
             auto client = [&](float gx, float gy) { return MAKELPARAM((int)(gx * rc.right / fw), (int)(gy * rc.bottom / fh)); };
+            if (cmd == "snap")  // frame.bmp and task-<id>.bmp now, not at the next 10 s tick
+            {
+                SaveFrameBmp();
+                answer = "ok " + std::to_string(g_framesShown) + "\n";
+                send(c, answer.data(), (int)answer.size(), 0);
+                continue;
+            }
             if (cmd == "clip")
             {
                 std::string v;

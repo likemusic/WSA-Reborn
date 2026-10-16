@@ -8,7 +8,7 @@ Everything else in WSA-Reborn keeps Microsoft's host: `WsaService.exe` starts th
 
 **Status: experimental.** It boots Android 16 to the home screen and runs apps in their own windows, alongside a running stock WSA. Rendering is in software: the guest has no GPU (SwiftShader + ANGLE inside Android, frames sent to the host over vsock), so it is fine for ordinary apps and automated tests and slow for games and video. Tested with an Android 16 system image (`aosp16`) on Windows 11 x64.
 
-Not done yet: hardware graphics (virtio-gpu), registering `wsa://` and Start-menu entries (shortcuts are made in the host folder instead). Android's sound plays on Windows' default output device; the microphone is used only when `settings.txt` says so.
+Hardware graphics is there too, as an experiment: the host's own virtio-gpu runs the guest's OpenGL ES on your GPU through WSA's own renderer (see [Hardware graphics](#hardware-graphics-experimental)). Not done yet: Vulkan on the GPU, running the GPU from the service (it works from the agent), registering `wsa://` and Start-menu entries (shortcuts are made in the host folder instead). Android's sound plays on Windows' default output device; the microphone is used only when `settings.txt` says so.
 
 ## How it fits together
 
@@ -121,6 +121,27 @@ Then, as the normal user:
 
 A launchable app gets a shortcut with its icon in `C:\WSA-Host\apps\` (it runs `--launch <package>`), and the client puts `Subsystem settings` there too (it runs `--settings`); pin the ones you use to Start or the taskbar. `adb connect 127.0.0.1:58600` works from Windows; from WSL run `host/adb-wsl-tunnel.sh` and use `adb connect 127.0.0.1:58601` (WSL in NAT mode cannot reach Windows' loopback).
 
+## Hardware graphics (experimental)
+
+The host can give the VM its own virtio-gpu (a PCI device emulated through the documented HDV API of Windows, `hypervdevicevirtualization.h`) and feed its 3D commands into `gfxstream_backend.dll` from **your** WSA folder — the renderer `WsaClient` uses, loaded the way `wsldevicehost.dll` is. The guest then runs Microsoft's own graphics stack from `vendor.vhdx` (gralloc, EGL and Vulkan of gfxstream) on the host GPU; only the composer is ours, because Microsoft's sends its frames to a host renderer that only `WsaClient` has.
+
+1. Build our HWC2 with the NDK (no Android tree needed; a dozen AOSP headers are fetched into `~/.cache/wsa-reborn`):
+   ```bash
+   device/microsoft/wsa_x86_64/headless-hwc/ndk-build.sh            # -> device/.../headless-hwc/out/hwcomposer.wsa_headless.so
+   ```
+2. Make `vendor-gpu.vhdx` — your `vendor.vhdx` with that composer in place of `hwcomposer.windows.so`:
+   ```bash
+   bin/hwc-vendor.sh /mnt/c/WSA/vendor.vhdx device/microsoft/wsa_x86_64/headless-hwc/out/hwcomposer.wsa_headless.so \
+       /mnt/c/Users/you/AppData/Local/Temp/wsa-reborn-host/vendor-gpu.vhdx
+   ```
+3. Point the vendor disk of `config.json` at `vendor-gpu.vhdx` and add to `shares.txt`:
+   ```
+   hdv gpu External gfxstream=C:\WSA flags=11
+   ```
+   (`flags=11` are the renderer flags `WsaClient` uses: EGL and GLES.)
+
+Frames and task windows then arrive exactly as with the software vendor; an app reports `GL_VENDOR=Microsoft, GL_RENDERER=Subsystem OpenGL ES Translator`. The composer reads every frame back from the GPU (`TRANSFER_FROM_HOST` of virtio-gpu), which costs a copy per frame — fine for apps and tests, not tuned for games. Fenced commands are answered when the renderer reports them done, as crosvm does (`nofences` on the `hdv` line answers at once, as `WsaClient` does). `testapps/ahbinfo` prints what a gralloc buffer of this stack looks like. So far tested from the agent (development mode), not from the service.
+
 ## Command port
 
 The client listens on `127.0.0.1:58610` (Windows only) for one line per connection — handy for scripts and tests:
@@ -134,6 +155,7 @@ The client listens on `127.0.0.1:58610` (Windows only) for one line per connecti
 | `clip on\|off` | the clipboard, until the `clipboard` line of `settings.txt` changes |
 | `sound [<0-100>]` | the volume of Android's sound (this output only, until the client restarts); prints frames, bytes played and dropped, and the microphone's reads and bytes |
 | `nclick`, `naction <button> [reply]`, `ndismiss` | act on the last notification |
+| `snap` | write `frame.bmp` and `task-<id>.bmp` (the display and each task window as the host shows them) now |
 
 ## Development mode: the agent
 

@@ -16,6 +16,11 @@
  * where host/host shows it in a window. A sender thread keeps only the latest frame; while no host listens it
  * reconnects every 2 s and nothing is copied. Wire format: struct FrameHeader, then height * stride bytes.
  *
+ * With a host GPU (16.10.2026): the module also runs over Microsoft's own vendor graphics — gralloc and EGL of gfxstream
+ * on the own host's virtio-gpu — in place of hwcomposer.windows.so, whose frames go to the host's GSK renderer that only
+ * WsaClient has. Buffers are then Microsoft's handles (struct MsHandle): their pixels are fetched from the host with
+ * TRANSFER_FROM_HOST and read through a mapping of the blob; frames and task pictures go to the host as above.
+ *
  * Task windows (15.10.2026): SurfaceFlinger (patch 0006) tags every layer of a task with the generic metadata
  * com.microsoft.wsa.taskid (inherited from the task surface), the same key Microsoft's hwcomposer.windows.so groups
  * layers into host windows by. The module declares the key, remembers each layer's buffer and geometry and, after the
@@ -37,7 +42,10 @@
 #include <cutils/properties.h>
 #include <log/log.h>
 
+#include <drm/drm.h>
+#include <drm/virtgpu_drm.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/dma-buf.h>
 #include <poll.h>
 #include <sys/ioctl.h>
@@ -112,6 +120,115 @@ struct __attribute__((packed)) CrosHandle {
 };
 constexpr uint32_t kCrosMagic = 0xABCDDCBA;
 
+// Microsoft's gralloc on virtio-gpu with gfxstream (vendor as is, own host with its own virtio-gpu, docs/own-host.md,
+// 16.10.2026): one fd — the dma-buf of a host-visible blob — and 21 ints: [0] the virtio-gpu resource, [1] usage,
+// [2] width, [3] height, [4] HAL format, [13] bytes per pixel, [14] stride in pixels, [20] magic (read with
+// testapps/ahbinfo). The pixels live in the host's GPU: TRANSFER_FROM_HOST copies them into the blob, read through a
+// VIRTGPU_MAP mapping, as Microsoft's mapper does on lock.
+struct __attribute__((packed)) MsHandle {
+    native_handle_t base;
+    int32_t fd;
+    int32_t ints[21];
+    uint32_t width() const { return (uint32_t)ints[2]; }
+    uint32_t height() const { return (uint32_t)ints[3]; }
+    int32_t format() const { return ints[4]; }
+    uint32_t stride() const { return (uint32_t)ints[14] * (uint32_t)ints[13]; }  // bytes
+};
+constexpr uint32_t kMsMagic = 0xABCDDCBB;
+
+const MsHandle* msHandle(buffer_handle_t h) {
+    const MsHandle* m = reinterpret_cast<const MsHandle*>(h);
+    return m && m->base.numFds == 1 && m->base.numInts == 21 && (uint32_t)m->ints[20] == kMsMagic ? m : nullptr;
+}
+
+// DRM fourcc of the frame header for a HAL format, 0 for the ones the host does not take.
+uint32_t drmFormat(int32_t hal) {
+    switch (hal) {
+        case 1: return 0x34324241;  // RGBA_8888 -> AB24
+        case 2: return 0x34324258;  // RGBX_8888 -> XB24
+        case 5: return 0x34325241;  // BGRA_8888 -> AR24
+        default: return 0;
+    }
+}
+
+// Mappings of Microsoft's buffers on renderD128, by dma-buf inode; the GEM handle keeps a buffer SurfaceFlinger has
+// freed alive until the cache is cleared, so an inode is not reused meanwhile.
+class VirtioReader {
+  public:
+    // Copies the buffer's pixels, fresh from the host, into out (stride * height bytes, stride and size from the
+    // handle). Copied under the lock: the composer thread and the task pictures share the cache.
+    bool read(const MsHandle* h, std::vector<uint8_t>& out) {
+        std::lock_guard<std::mutex> l(lock_);
+        if (drm_ < 0) {
+            drm_ = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+            if (drm_ < 0) return fail("open renderD128");
+        }
+        struct stat st;
+        if (fstat(h->fd, &st)) return false;
+        auto it = maps_.find((uint64_t)st.st_ino);
+        if (it == maps_.end()) {
+            if (maps_.size() >= 32) clear();
+            drm_prime_handle p{};
+            p.fd = h->fd;
+            if (ioctl(drm_, DRM_IOCTL_PRIME_FD_TO_HANDLE, &p)) return fail("PRIME_FD_TO_HANDLE");
+            drm_virtgpu_resource_info ri{};
+            ri.bo_handle = p.handle;
+            drm_virtgpu_map m{};
+            m.handle = p.handle;
+            void* a = MAP_FAILED;
+            if (!ioctl(drm_, DRM_IOCTL_VIRTGPU_RESOURCE_INFO, &ri) && !ioctl(drm_, DRM_IOCTL_VIRTGPU_MAP, &m))
+                a = mmap(nullptr, ri.size, PROT_READ, MAP_SHARED, drm_, (off_t)m.offset);
+            if (a == MAP_FAILED) {
+                closeBo(p.handle);
+                return fail("map");
+            }
+            it = maps_.emplace((uint64_t)st.st_ino, Map{p.handle, a, ri.size}).first;
+        }
+        return fetch(it->second, h->width(), h->height(), h->stride(), out);
+    }
+
+  private:
+    struct Map {
+        uint32_t bo;
+        void* addr;
+        size_t size;
+    };
+    bool fail(const char* what) {
+        if (warnings_++ < 10) ALOGW("virtio-gpu buffer: %s failed: %s", what, strerror(errno));
+        return false;
+    }
+    bool fetch(const Map& m, uint32_t width, uint32_t height, uint32_t stride, std::vector<uint8_t>& out) {
+        if ((size_t)stride * height > m.size) return fail("buffer larger than its blob");
+        drm_virtgpu_3d_transfer_from_host t{};
+        t.bo_handle = m.bo;
+        t.box = {0, 0, 0, width, height, 1};
+        if (ioctl(drm_, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &t)) return fail("TRANSFER_FROM_HOST");
+        drm_virtgpu_3d_wait w{};
+        w.handle = m.bo;
+        ioctl(drm_, DRM_IOCTL_VIRTGPU_WAIT, &w);
+        const uint8_t* p = static_cast<const uint8_t*>(m.addr);
+        out.assign(p, p + (size_t)stride * height);
+        return true;
+    }
+    void closeBo(uint32_t bo) {
+        drm_gem_close c{};
+        c.handle = bo;
+        ioctl(drm_, DRM_IOCTL_GEM_CLOSE, &c);
+    }
+    void clear() {
+        for (auto& [k, m] : maps_) {
+            munmap(m.addr, m.size);
+            closeBo(m.bo);
+        }
+        maps_.clear();
+    }
+    std::mutex lock_;
+    int drm_ = -1;
+    int warnings_ = 0;
+    std::map<uint64_t, Map> maps_;
+};
+VirtioReader gVirtio;
+
 struct __attribute__((packed)) FrameHeader {
     uint32_t magic = 0x46415357;  // "WSAF"
     uint32_t version = 1;
@@ -181,6 +298,27 @@ class FrameSink {
             close(fence);
         }
         if (!target || !connected_.load()) return;
+        if (const MsHandle* m = msHandle(target)) {
+            const uint32_t format = drmFormat(m->format());
+            std::vector<uint8_t> px;
+            if (!format || !gVirtio.read(m, px)) {
+                if (!format && !warned_) ALOGW("client target format %d not sent", m->format());
+                warned_ = true;
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> l(lock_);
+                latest_.assign(px.begin(), px.end());
+                header_.width = m->width();
+                header_.height = m->height();
+                header_.stride = m->stride();
+                header_.format = format;
+                header_.frame = frame;
+                dirty_ = true;
+            }
+            cv_.notify_all();
+            return;
+        }
         const CrosHandle* h = reinterpret_cast<const CrosHandle*>(target);
         if (h->base.numFds < 1 || h->magic != kCrosMagic) {
             if (!warned_) ALOGW("client target is not a minigbm handle (numFds %d), frames not sent", h->base.numFds);
@@ -878,7 +1016,7 @@ int32_t getDisplayRequests(hwc2_device_t*, hwc2_display_t display, int32_t* outD
 
 // ---- task pictures
 
-// A read-only CPU view of a minigbm buffer (one linear plane); unmapped by the destructor.
+// A read-only CPU view of a minigbm buffer (one linear plane; unmapped by the destructor) or of Microsoft's.
 struct BufferView {
     const uint8_t* base = nullptr;
     void* addr = MAP_FAILED;
@@ -886,8 +1024,18 @@ struct BufferView {
     int fd = -1;
     uint32_t stride = 0, width = 0, height = 0;
     int32_t format = 0;
+    std::vector<uint8_t> copy;  // Microsoft's buffers
 
     bool open(buffer_handle_t handle) {
+        if (const MsHandle* m = msHandle(handle)) {  // a copy, nothing to unmap
+            if (!gVirtio.read(m, copy)) return false;
+            base = copy.data();
+            stride = m->stride();
+            width = m->width();
+            height = m->height();
+            format = m->format();
+            return true;
+        }
         const CrosHandle* h = reinterpret_cast<const CrosHandle*>(handle);
         if (!h || h->base.numFds < 1 || h->magic != kCrosMagic) return false;
         fd = h->fds[0];
