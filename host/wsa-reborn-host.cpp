@@ -70,6 +70,7 @@
 #include <winrt/Windows.UI.Notifications.h>
 #include <algorithm>
 #include <atomic>
+#include <deque>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -94,6 +95,7 @@
 #pragma comment(lib, "windowsapp.lib")
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "wtsapi32.lib")
+#pragma comment(lib, "winmm.lib")
 
 // The compute system id is a GUID, as WSL's machine id: the virtio device host (IPlan9FileSystem::CreateVirtioDevice)
 // answers E_INVALIDARG to any other name (12.10.2026).
@@ -822,7 +824,7 @@ static void AddShares()
 // service) and asks for channels "the other way round": it listens on an ephemeral vsock port and sends
 // {u32 total_len, u32 type=1, u32 0, u32 listen_port, u32 name_len, u32 0, name\0}; the host connects back to that
 // port. Inside a channel: u32 LE length + LatteApi.Common.ApiMessageHeader. Everything is logged to rcm.log; the only
-// channels served so far: SysPrep (StartPhase1), Composition (one display), AudioControl (fixed format); every other call gets an empty Success
+// channels served so far: SysPrep (StartPhase1), Composition (one display), AudioControl (fixed format), AudioOut (played to Windows); every other call gets an empty Success
 // reply. Port 35034 is logcat, see RcmControl — the host's StartPhase1 lets init past wait_for_prop vendor.sysprep.start_phase=1.
 static std::ofstream g_rcmLog;
 
@@ -922,7 +924,7 @@ static std::string CompositionAnswer(unsigned long long type)
 // AudioControl frames carry a bare LatteApi.AudioControl.AudioControlMessage (no ApiMessageHeader): the guest's audio HAL
 // asks {message_type=Request, request_id, request{control_code, arg}} and waits for {Response, request_id,
 // response{control_code, error_code, result}} — without an answer audioserver dies and system_server's watchdog fires
-// (12.10.2026). Answers: 48 kHz, stereo, PCM 16 bit; AudioOut is drained, AudioIn stays silent.
+// (12.10.2026). Answers: 48 kHz, stereo, PCM 16 bit; AudioOut is played (SoundFrame), AudioIn stays silent.
 static std::string AudioControlAnswer(const std::string& body)
 {
     std::map<int, unsigned long long> m, rq;
@@ -948,6 +950,81 @@ static std::string AudioControlAnswer(const std::string& body)
     PbInt(msg, 2, m[2]);
     PbBytes(msg, 4, resp);
     return msg;
+}
+
+// AudioOut: the HAL (ArtAudio::AudioChannel::sendAudio) sends each buffer as a frame {u64 1, u32 bytes} + PCM in the
+// format AudioControlAnswer gave it, and paces itself (at most ~75 ms ahead of real time, usleep otherwise) — so the host
+// only queues the PCM to waveOut on the default device (the wave mapper follows a change of the default). The queue is
+// capped at 400 ms: what comes beyond it (the host stalled) is dropped rather than played late. The command port's
+// "sound <0-100>" sets the volume of this output alone, "sound" prints the counters. 16.10.2026.
+static std::mutex g_soundLock;
+static HWAVEOUT g_waveOut = nullptr;            // under g_soundLock, as the rest
+static std::deque<WAVEHDR*> g_waveQueue;
+static DWORD g_waveVolume = 0xffffffff;         // waveOutSetVolume: low word left, high word right
+static unsigned long long g_soundFrames = 0, g_soundBytes = 0, g_soundDropped = 0, g_soundPlayedBefore = 0;
+static const unsigned kSoundRate = 48000, kSoundFrameBytes = 4, kSoundMaxQueued = kSoundRate * kSoundFrameBytes * 4 / 10;
+
+static unsigned long long SoundPlayedLocked()
+{
+    MMTIME t{TIME_BYTES};
+    return g_soundPlayedBefore + (g_waveOut && waveOutGetPosition(g_waveOut, &t, sizeof t) == MMSYSERR_NOERROR && t.wType == TIME_BYTES ? t.u.cb : 0);
+}
+
+static void SoundCloseLocked()
+{
+    if (!g_waveOut) return;
+    g_soundPlayedBefore = SoundPlayedLocked();
+    waveOutReset(g_waveOut);
+    for (WAVEHDR* h : g_waveQueue) { waveOutUnprepareHeader(g_waveOut, h, sizeof *h); delete[] h->lpData; delete h; }
+    g_waveQueue.clear();
+    waveOutClose(g_waveOut);
+    g_waveOut = nullptr;
+}
+
+static void SoundFrame(const std::string& body)
+{
+    if (body.size() < 12 || *(const unsigned long long*)body.data() != 1 || *(const unsigned*)(body.data() + 8) != body.size() - 12)
+    {
+        RcmLog("channel AudioOut: unexpected frame " + Hex(body.data(), body.size(), 32));
+        return;
+    }
+    const size_t bytes = body.size() - 12;
+    std::lock_guard<std::mutex> l(g_soundLock);
+    g_soundFrames++, g_soundBytes += bytes;
+    if (!g_waveOut)
+    {
+        WAVEFORMATEX f{WAVE_FORMAT_PCM, 2, kSoundRate, kSoundRate * kSoundFrameBytes, kSoundFrameBytes, 16, 0};
+        MMRESULT r = waveOutOpen(&g_waveOut, WAVE_MAPPER, &f, 0, 0, CALLBACK_NULL);
+        if (r != MMSYSERR_NOERROR) { g_waveOut = nullptr; g_soundDropped += bytes; if (g_soundFrames % 500 == 1) RcmLog("channel AudioOut: waveOutOpen failed " + std::to_string(r)); return; }
+        waveOutSetVolume(g_waveOut, g_waveVolume);
+        RcmLog("channel AudioOut: playing to the default device");
+    }
+    size_t queued = 0;
+    while (!g_waveQueue.empty() && (g_waveQueue.front()->dwFlags & WHDR_DONE))
+    {
+        WAVEHDR* h = g_waveQueue.front();
+        g_waveQueue.pop_front();
+        waveOutUnprepareHeader(g_waveOut, h, sizeof *h);
+        delete[] h->lpData;
+        delete h;
+    }
+    for (WAVEHDR* h : g_waveQueue) queued += h->dwBufferLength;
+    if (queued + bytes > kSoundMaxQueued) { g_soundDropped += bytes; return; }
+    WAVEHDR* h = new WAVEHDR{};
+    h->lpData = new char[bytes];
+    memcpy(h->lpData, body.data() + 12, bytes);
+    h->dwBufferLength = (DWORD)bytes;
+    if (waveOutPrepareHeader(g_waveOut, h, sizeof *h) != MMSYSERR_NOERROR || waveOutWrite(g_waveOut, h, sizeof *h) != MMSYSERR_NOERROR)
+    {
+        // The device went away (unplugged, the default changed under an exclusive app): reopen on the next frame.
+        waveOutUnprepareHeader(g_waveOut, h, sizeof *h);
+        delete[] h->lpData;
+        delete h;
+        g_soundDropped += bytes;
+        SoundCloseLocked();
+        return;
+    }
+    g_waveQueue.push_back(h);
 }
 
 // SettingsMessage{message_type=NetworkConfiguration (18), activity_id, network_configuration{is_connected=true,
@@ -2306,7 +2383,8 @@ static void RcmChannel(std::string name, unsigned port)
                 if (!a.empty()) SendFrame(h, a);
                 continue;
             }
-            if (name == "AudioOut" || name == "AudioIn") continue;
+            if (name == "AudioOut") { if (++frames <= 3) RcmLog("channel AudioOut: RECV " + Hex(body.data(), body.size(), 32) + " (" + std::to_string(body.size()) + " bytes)"); SoundFrame(body); continue; }
+            if (name == "AudioIn") continue;
             std::map<int, unsigned long long> hdr, msg;
             auto parts = PbFields(body, &hdr);
             PbFields(parts[4], &msg);
@@ -2328,6 +2406,7 @@ static void RcmChannel(std::string name, unsigned port)
         }
     }
     RcmLog("channel " + name + ": closed (" + std::to_string(WSAGetLastError()) + ")");
+    if (name == "AudioOut") { std::lock_guard<std::mutex> l(g_soundLock); SoundCloseLocked(); }
     if (name == "UserInput") { std::lock_guard<std::mutex> l(g_inputLock); g_userInput = INVALID_SOCKET; }
     if (name == "Shell") { std::lock_guard<std::mutex> l(g_shellLock); g_shell = INVALID_SOCKET; }
     if (name == "Notification") { std::lock_guard<std::mutex> l(g_notifLock); g_notif = INVALID_SOCKET; }
@@ -2917,6 +2996,7 @@ static void FrameListen()
 //   tclick <task> <x> <y>  left click at px of the task's own picture, posted to its window
 //   tkey <task> <vk>       key press into the task's window
 //   clip on|off            clipboard exchange with the guest (off by default: the owner's clipboard)
+//   sound [<0-100>]        the volume of the guest's sound (this client's output only); without it — the counters
 //   uris on|off            open the guest's links in Windows (default) or only log them
 //   clipput text|html|png|file <path>  send a file's content to the guest as a Windows copy would (no clipboard touched)
 //   files open|off         open files the guest sends with launch=true (off by default: only downloads\ + a log line)
@@ -2958,6 +3038,23 @@ static void InputControl(unsigned short port)
                 in >> v;
                 g_clipOn = v == "on";
                 answer = std::string("ok clip ") + (g_clipOn ? "on" : "off") + "\n";
+                send(c, answer.data(), (int)answer.size(), 0);
+                continue;
+            }
+            if (cmd == "sound")
+            {
+                int v = -1;
+                in >> v;
+                std::lock_guard<std::mutex> lk(g_soundLock);
+                if (v >= 0 && v <= 100)
+                {
+                    DWORD w = (DWORD)(v * 0xffff / 100);
+                    g_waveVolume = w | w << 16;
+                    if (g_waveOut) waveOutSetVolume(g_waveOut, g_waveVolume);
+                }
+                char a[200];
+                std::snprintf(a, sizeof a, "ok sound volume %u frames %llu bytes %llu played %llu dropped %llu\n", (unsigned)((g_waveVolume & 0xffff) * 100 / 0xffff), g_soundFrames, g_soundBytes, SoundPlayedLocked(), g_soundDropped);
+                answer = a;
                 send(c, answer.data(), (int)answer.size(), 0);
                 continue;
             }

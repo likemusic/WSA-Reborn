@@ -8,7 +8,7 @@ Everything else in WSA-Reborn keeps Microsoft's host: `WsaService.exe` starts th
 
 **Status: experimental.** It boots Android 16 to the home screen and runs apps in their own windows, alongside a running stock WSA. Rendering is in software: the guest has no GPU (SwiftShader + ANGLE inside Android, frames sent to the host over vsock), so it is fine for ordinary apps and automated tests and slow for games and video. Tested with an Android 16 system image (`aosp16`) on Windows 11 x64.
 
-Not done yet: hardware graphics (virtio-gpu), registering `wsa://` and Start-menu entries (shortcuts are made in the host folder instead), and sound to Windows.
+Not done yet: hardware graphics (virtio-gpu), registering `wsa://` and Start-menu entries (shortcuts are made in the host folder instead), and the microphone (Android's sound plays on Windows' default device).
 
 ## How it fits together
 
@@ -131,6 +131,7 @@ The client listens on `127.0.0.1:58610` (Windows only) for one line per connecti
 | `tclick <task> <x> <y>`, `tkey <task> <vk>` | a click or a key into a task's window |
 | `apps`, `launch <package>`, `uninstall <package>` | the app list, start, uninstall |
 | `clip on\|off` | the clipboard, until the `clipboard` line of `settings.txt` changes |
+| `sound [<0-100>]` | the volume of Android's sound (this output only, until the client restarts); prints frames, bytes played and dropped |
 | `nclick`, `naction <button> [reply]`, `ndismiss` | act on the last notification |
 
 ## Development mode: the agent
