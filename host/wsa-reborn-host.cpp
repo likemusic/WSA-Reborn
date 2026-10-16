@@ -4340,12 +4340,16 @@ static void FrameWindowThread()
     tc.hInstance = GetModuleHandleW(nullptr);
     tc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     tc.lpszClassName = L"WsaTaskWindow";
+    // The whole client area again on every resize: the picture is fitted (FitRect), and with only the newly exposed part
+    // repainted a maximized window kept the old, smaller picture in its corner (16.10.2026).
+    tc.style = CS_HREDRAW | CS_VREDRAW;
     RegisterClassW(&tc);
     WNDCLASSW wc{};
     wc.lpfnWndProc = FrameWndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.lpszClassName = L"WsaHeadlessFrame";
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     RegisterClassW(&wc);
     RECT r{0, 0, 1280, 800};
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
