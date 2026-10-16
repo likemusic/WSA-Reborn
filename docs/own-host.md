@@ -142,6 +142,19 @@ The host can give the VM its own virtio-gpu (a PCI device emulated through the d
 
 Frames and task windows then arrive exactly as with the software vendor; an app reports `GL_VENDOR=Microsoft, GL_RENDERER=Subsystem OpenGL ES Translator` (OpenGL ES 3.0), `testapps/vkprobe` lists your GPU with Vulkan 1.3. The composer reads every frame back from the GPU (`TRANSFER_FROM_HOST` of virtio-gpu), which costs a copy per frame — fine for apps and tests, not tuned for games. Fenced commands are answered when the renderer reports them done, as crosvm does (`nofences` on the `hdv` line answers at once, as `WsaClient` does). `testapps/ahbinfo` prints what a gralloc buffer of this stack looks like. So far tested from the agent (development mode), not from the service.
 
+## Several Android versions at once
+
+Two copies of stock WSA cannot run together (both clients activate the same COM class), but own hosts can: each is a folder of its own with these lines in its `shares.txt`:
+
+```
+instance a17
+port 58700
+vmid <a fresh random GUID>
+nic <network id> <another address>/<prefix> <gateway>
+```
+
+`instance` gives `-<name>` to everything that is one per machine — the console pipes, the service (`WsaRebornHost-a17`, with `%ProgramFiles%`/`%ProgramData%\WsaReborn-a17`), the notification id, the start at sign-in, the settings window and the VM's memory process (`vmmemWsaa17` in Task Manager). `port` is its adb port (the command port is that plus 10); `--client` and `--launch` take it from `shares.txt`. Each instance also needs its own `system.vhdx` (it is attached writable), its own `userdata.2.vhdx`/`metadata.2.vhdx` and its own guest address. Generate the `vmid` (`[guid]::NewGuid()`): two ids one byte apart made the second VM fail in HCS with `0x800700b7` even without any device. Checked with stock WSA, an own host with Android 16 and one with Android 17 running at once — all three booted, with network, GPU rendering and task windows; memory is the limit (about 3–4 GB per VM).
+
 ## Command port
 
 The client listens on `127.0.0.1:58610` (Windows only) for one line per connection — handy for scripts and tests:
