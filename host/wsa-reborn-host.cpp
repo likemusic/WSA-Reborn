@@ -379,6 +379,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE RegisterDeviceHost(IVmDeviceHost* host, DWORD pid, UINT64* ipc) override
     {
+        std::printf("RegisterDeviceHost from pid %lu...\n", pid);
         using Fn = HRESULT(WINAPI*)(HCS_SYSTEM, PVOID, DWORD, UINT64*);
         static Fn proxy = (Fn)GetProcAddress(LoadLibraryW(L"vmdevicehost.dll"), "HdvProxyDeviceHost");
         IUnknown* unk = nullptr;
@@ -1054,6 +1055,7 @@ struct HdvGpu
     UINT64 fencesCreated = 0, fencesForced = 0;
 };
 static HdvGpu g_hdvGpu;
+static HRESULT GuestRead(HDV_DEVICE dev, UINT64 gpa, UINT64 len, BYTE* buf);
 static std::map<UINT32, UINT64> g_hdvGpuBlobSizes;  // host: mapped host-visible blobs, resource -> size
 
 // Host: TRANSFER_FROM_HOST of every mapped blob of a frame's size (as Microsoft's mapper does on lock), before the dump.
@@ -1551,7 +1553,7 @@ static UINT32 HdvGpuCommand(HdvGpu& d, const std::vector<BYTE>& req, std::vector
                 if (src < pos + blen)
                 {
                     UINT32 in = (UINT32)std::min<UINT64>(len, pos + blen - src);
-                    HdvReadGuestMemory(d.handle, addr + (src - pos), in, dst);
+                    GuestRead(d.handle, addr + (src - pos), in, dst);
                     dst += in; src += in; len -= in;
                 }
                 pos += blen;
@@ -1585,13 +1587,59 @@ static UINT32 HdvGpuCommand(HdvGpu& d, const std::vector<BYTE>& req, std::vector
     return (UINT32)resp.size();
 }
 
+// Guest memory for the GPU's rings and requests. HdvReadGuestMemory/HdvWriteGuestMemory answer 0x80070005 when the
+// device host is proxied (--hdv-host, HdvInitializeDeviceHostForProxy, 16.10.2026), apertures work in both cases (as
+// wsldevicehost.dll does): guest memory is mapped 1 MiB at a time (a page at a time where a whole MiB is refused) and
+// the mappings are kept for the device's life.
+static std::mutex g_gpaLock;
+static std::map<UINT64, BYTE*> g_gpaChunks;  // chunk base (1 MiB, or a page with bit 0 set) -> mapping
+static BYTE* GuestPtr(HDV_DEVICE dev, UINT64 gpa, UINT64* avail)
+{
+    std::lock_guard<std::mutex> l(g_gpaLock);
+    UINT64 mib = gpa & ~0xFFFFFULL, page = gpa & ~0xFFFULL;
+    auto it = g_gpaChunks.find(mib);
+    if (it != g_gpaChunks.end() && it->second) { *avail = mib + 0x100000 - gpa; return it->second + (gpa - mib); }
+    if (it == g_gpaChunks.end())
+    {
+        PVOID p = nullptr;
+        HRESULT hr = HdvCreateGuestMemoryAperture(dev, mib, 0x100000, FALSE, &p);
+        g_gpaChunks[mib] = SUCCEEDED(hr) ? (BYTE*)p : nullptr;
+        if (SUCCEEDED(hr)) { *avail = mib + 0x100000 - gpa; return (BYTE*)p + (gpa - mib); }
+    }
+    auto pg = g_gpaChunks.find(page | 1);
+    if (pg == g_gpaChunks.end())
+    {
+        PVOID p = nullptr;
+        HRESULT hr = HdvCreateGuestMemoryAperture(dev, page, 0x1000, FALSE, &p);
+        if (FAILED(hr)) { static int logged = 0; if (logged++ < 5) std::printf("hdv gpu: aperture 0x%llx: 0x%08lx\n", page, hr); return nullptr; }
+        pg = g_gpaChunks.emplace(page | 1, (BYTE*)p).first;
+    }
+    *avail = page + 0x1000 - gpa;
+    return pg->second + (gpa - page);
+}
+static HRESULT GuestCopy(HDV_DEVICE dev, UINT64 gpa, UINT64 len, BYTE* buf, bool write)
+{
+    while (len)
+    {
+        UINT64 avail = 0;
+        BYTE* p = GuestPtr(dev, gpa, &avail);
+        if (!p) return write ? HdvWriteGuestMemory(dev, gpa, (UINT32)len, buf) : HdvReadGuestMemory(dev, gpa, (UINT32)len, buf);
+        UINT64 n = (std::min)(avail, len);
+        if (write) std::memcpy(p, buf, (size_t)n); else std::memcpy(buf, p, (size_t)n);
+        gpa += n, buf += n, len -= n;
+    }
+    return S_OK;
+}
+static HRESULT GuestRead(HDV_DEVICE dev, UINT64 gpa, UINT64 len, BYTE* buf) { return GuestCopy(dev, gpa, len, buf, false); }
+static HRESULT GuestWrite(HDV_DEVICE dev, UINT64 gpa, UINT64 len, const BYTE* buf) { return GuestCopy(dev, gpa, len, const_cast<BYTE*>(buf), true); }
+
 static void HdvGpuUsed(HdvGpu& d, HdvGpu::Queue& q, UINT16 head, UINT32 written)
 {
     UINT32 used[2] = {head, written};
-    HdvWriteGuestMemory(d.handle, q.used + 4 + 8 * (q.usedIdx % q.size), 8, (BYTE*)used);
+    GuestWrite(d.handle, q.used + 4 + 8 * (q.usedIdx % q.size), 8, (BYTE*)used);
     q.usedIdx++;
     MemoryBarrier();
-    HdvWriteGuestMemory(d.handle, q.used + 2, 2, (BYTE*)&q.usedIdx);
+    GuestWrite(d.handle, q.used + 2, 2, (BYTE*)&q.usedIdx);
 }
 
 static void HdvGpuProcess(HdvGpu& d, UINT32 qi)
@@ -1603,10 +1651,12 @@ static void HdvGpuProcess(HdvGpu& d, UINT32 qi)
     for (;;)
     {
         UINT16 availIdx = 0;
-        HdvReadGuestMemory(d.handle, q.avail + 2, 2, (BYTE*)&availIdx);
+        HRESULT rr = GuestRead(d.handle, q.avail + 2, 2, (BYTE*)&availIdx);
+        static int rlog = 0;
+        if (FAILED(rr) && rlog++ < 5) std::printf("hdv gpu: guest read avail 0x%llx: 0x%08lx\n", q.avail + 2, rr);
         if (availIdx == q.lastAvail) break;
         UINT16 head = 0;
-        HdvReadGuestMemory(d.handle, q.avail + 4 + 2 * (q.lastAvail % q.size), 2, (BYTE*)&head);
+        GuestRead(d.handle, q.avail + 4 + 2 * (q.lastAvail % q.size), 2, (BYTE*)&head);
         q.lastAvail++;
         std::vector<BYTE> req, resp;
         std::vector<Desc> writable;
@@ -1614,9 +1664,9 @@ static void HdvGpuProcess(HdvGpu& d, UINT32 qi)
         for (int n = 0; n < q.size; n++)
         {
             Desc ds;
-            HdvReadGuestMemory(d.handle, q.desc + 16ULL * i, 16, (BYTE*)&ds);
+            GuestRead(d.handle, q.desc + 16ULL * i, 16, (BYTE*)&ds);
             if (ds.flags & 2) writable.push_back(ds);
-            else { size_t o = req.size(); req.resize(o + ds.len); HdvReadGuestMemory(d.handle, ds.addr, ds.len, req.data() + o); }
+            else { size_t o = req.size(); req.resize(o + ds.len); GuestRead(d.handle, ds.addr, ds.len, req.data() + o); }
             if (!(ds.flags & 1)) break;
             i = ds.next;
         }
@@ -1625,7 +1675,7 @@ static void HdvGpuProcess(HdvGpu& d, UINT32 qi)
         {
             if (written >= n) break;
             UINT32 part = (std::min)(w.len, n - written);
-            HdvWriteGuestMemory(d.handle, w.addr, part, resp.data() + written);
+            GuestWrite(d.handle, w.addr, part, resp.data() + written);
             written += part;
         }
         // A fenced 3D command: its answer waits for the renderer (GfxstreamFence), unless fences are off.
@@ -1695,7 +1745,138 @@ static void HdvGpuKickFences() { g_hdvGpu.kick.notify_all(); }
 // Before the VM starts: the device host belongs to the compute system. "hdv <test|gpu> [<HostingModel>]" lines.
 static std::vector<std::pair<std::string, std::string>> g_hdvDevices;  // kind, hosting model
 
-static void HdvInit()
+static bool g_hdvComByHdv = false;  // COM security of the process left to HdvInitializeDeviceHostEx, see RunVm
+
+// HdvInitializeDeviceHostEx of vmdevicehost.dll (newer Windows), null without it.
+using HdvInitExFn = HRESULT(WINAPI*)(HCS_SYSTEM, HDV_DEVICE_HOST_FLAGS, HDV_HOST*);
+static HdvInitExFn HdvInitEx()
+{
+    static HdvInitExFn f = (HdvInitExFn)GetProcAddress(LoadLibraryW(L"vmdevicehost.dll"), "HdvInitializeDeviceHostEx");
+    return f;
+}
+
+static bool SharesHaveHdv()
+{
+    std::ifstream f(ConfigFile(L"shares.txt"));
+    for (std::string line; std::getline(f, line);)
+        if (line.rfind("hdv ", 0) == 0) return true;
+    return false;
+}
+
+// HDV devices under the service (experimental, "devicehost hdvclient" in shares.txt, with "client separate"): a
+// LocalSystem service gets 0x80070005 from HdvInitializeDeviceHost(Ex) whatever its COM security (16.10.2026), as
+// wsldevicehost.dll did, so the devices go to a user process started by the client (--hdv-host, StartHdvHost) before
+// client.ready (the VM is not started yet), and the service hot-adds them after the start. Where it stands: the host
+// registers (HdvInitializeDeviceHostForProxy -> RegisterDeviceHost -> HdvProxyDeviceHost), the guest enumerates the
+// device and enables its queues, but guest memory cannot be reached from the proxied host — HdvReadGuestMemory gives
+// 0x80070005 and HdvCreateGuestMemoryAperture 0x80070006, even with the VM's group and account granted access to the
+// process; wsldevicehost.dll first asks an object of its own context (a function table at +0x48 of it, slot +0x28)
+// for apertures — not taken apart yet. Without the line the devices stay in the VM half: works from the agent
+// (an elevated user), not under the service.
+// How the client gets at the VM: WriteHdvSupport / ClientHdvHost below.
+static bool g_hdvInClient = false;
+
+// The service's IVmDeviceHostSupport (g_deviceHost) for the client's HDV device host, marshaled to hdvsupport.objref
+// next to runtime.txt: HdvInitializeDeviceHostForProxy (vmdevicehost.dll, not in the SDK header; read in its code
+// 16.10.2026: (const GUID* vm id, IUnknown* support, HDV_HOST*), QueryInterface for IVmDeviceHostSupport, then
+// support->RegisterDeviceHost(own device host, own pid) — the service answers with HdvProxyDeviceHost, as for
+// wsldevicehost.dll). A plain user cannot open the VM (HcsOpenComputeSystem: HCS_E_ACCESS_DENIED), and the security
+// descriptor of HcsCreateComputeSystem is reserved (E_INVALIDARG for any).
+static void WriteHdvSupport()
+{
+    IStream* st = nullptr;
+    HRESULT hr = CreateStreamOnHGlobal(nullptr, TRUE, &st);
+    if (SUCCEEDED(hr)) hr = CoMarshalInterface(st, __uuidof(IVmDeviceHostSupport), static_cast<IVmDeviceHostSupport*>(&g_deviceHost), MSHCTX_LOCAL, nullptr, MSHLFLAGS_TABLESTRONG);
+    if (SUCCEEDED(hr))
+    {
+        HGLOBAL mem;
+        GetHGlobalFromStream(st, &mem);
+        STATSTG stat;
+        st->Stat(&stat, STATFLAG_NONAME);
+        { std::ofstream("hdvsupport.objref.tmp", std::ios::binary).write((const char*)GlobalLock(mem), (std::streamsize)stat.cbSize.QuadPart); }
+        GlobalUnlock(mem);
+        MoveFileExW(L"hdvsupport.objref.tmp", L"hdvsupport.objref", MOVEFILE_REPLACE_EXISTING);
+    }
+    if (st) st->Release();
+    std::printf("hdv: support for the client's device host -> hdvsupport.objref: 0x%08lx\n", hr);
+}
+
+// "--hdv-host <objref>" (started by the client): the device host for the HDV devices, registered with the service's
+// VM through its support object; writes hdvhost.ready when the devices exist, then serves them until killed.
+static HRESULT ClientHdvHost(const std::wstring& objref)
+{
+    std::ifstream mf(objref, std::ios::binary);
+    std::string b((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
+    IStream* st = b.empty() ? nullptr : SHCreateMemStream((const BYTE*)b.data(), (UINT)b.size());
+    IUnknown* support = nullptr;
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    hr = st ? CoUnmarshalInterface(st, __uuidof(IUnknown), (void**)&support) : HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+    if (st) st->Release();
+    std::printf("client: hdv support %ls (%zu bytes): 0x%08lx\n", objref.c_str(), b.size(), hr);
+    if (FAILED(hr)) return hr;
+    // (const GUID* vm, IUnknown* support, HDV_HOST*): as wsldevicehost.dll calls it — with the VM's id, the key of its
+    // cache of hosts (a null first argument never returned).
+    using Fn = HRESULT(WINAPI*)(const GUID*, IUnknown*, HDV_HOST*);
+    static Fn forProxy = (Fn)GetProcAddress(LoadLibraryW(L"vmdevicehost.dll"), "HdvInitializeDeviceHostForProxy");
+    GUID vm{};
+    CLSIDFromString((L"{" + std::wstring(kVmId) + L"}").c_str(), &vm);
+    hr = forProxy ? forProxy(&vm, support, &g_hdvHost) : HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
+    std::printf("client: HdvInitializeDeviceHostForProxy: 0x%08lx\n", hr);
+    if (FAILED(hr)) g_hdvHost = nullptr;
+    return hr;
+}
+
+static void HdvParse();
+static void HdvCreate();
+
+static void ProcessAclForVm();
+static int HdvHostMain(const std::wstring& objref, const wchar_t* runtimeId)
+{
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    // The VM worker maps guest memory into this process (apertures answered E_HANDLE without it): its group and account
+    // get access to the process, as "devicehost acl" grants for the service.
+    if (runtimeId && SUCCEEDED(CLSIDFromString(runtimeId, &g_runtimeId))) ProcessAclForVm();
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    CoInitializeSecurity(nullptr, -1, nullptr, nullptr, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_STATIC_CLOAKING, nullptr);
+    if (SUCCEEDED(ClientHdvHost(objref))) { HdvParse(); HdvCreate(); }
+    std::ofstream("hdvhost.ready") << GetCurrentProcessId() << "\n";
+    for (;;) Sleep(INFINITE);
+}
+
+// Client: start --hdv-host and wait (up to a minute) for its hdvhost.ready; its log goes to hdvhost-out.txt.
+static void StartHdvHost(const std::wstring& objref)
+{
+    DeleteFileW(L"hdvhost.ready");
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    wchar_t rid[64] = L"";
+    StringFromGUID2(g_runtimeId, rid, 64);
+    std::wstring cmd = L"\"" + std::wstring(self) + L"\" --hdv-host \"" + objref + L"\" " + rid;
+    SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, TRUE};
+    HANDLE log = CreateFileW(L"hdvhost-out.txt", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, &sa, CREATE_ALWAYS, 0, nullptr);
+    STARTUPINFOW si{sizeof si};
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = si.hStdError = log;
+    PROCESS_INFORMATION pi{};
+    static HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
+    li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li);
+    BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &si, &pi);
+    if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
+    if (!ok) { std::printf("client: cannot start the hdv host (%lu)\n", GetLastError()); return; }
+    AssignProcessToJobObject(job, pi.hProcess);
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    for (int i = 0; i < 600 && GetFileAttributesW(L"hdvhost.ready") == INVALID_FILE_ATTRIBUTES; i++)
+    {
+        if (WaitForSingleObject(pi.hProcess, 100) == WAIT_OBJECT_0) { std::printf("client: the hdv host exited\n"); break; }
+    }
+    std::printf("client: hdv host pid %lu %s\n", pi.dwProcessId, GetFileAttributesW(L"hdvhost.ready") != INVALID_FILE_ATTRIBUTES ? "ready (hdvhost-out.txt)" : "not ready");
+    CloseHandle(pi.hProcess);
+}
+
+static void HdvParse()
 {
     std::ifstream f(ConfigFile(L"shares.txt"));
     for (std::string line; std::getline(f, line);)
@@ -1720,10 +1901,19 @@ static void HdvInit()
             g_hdvDevices.push_back({kind, model});
         }
     }
+}
+
+static void HdvCreate()
+{
     if (g_hdvDevices.empty()) return;
-    HRESULT hr = HdvInitializeDeviceHost(g_system, &g_hdvHost);
-    std::printf("hdv: HdvInitializeDeviceHost: 0x%08lx\n", hr);
-    if (FAILED(hr)) { g_hdvHost = nullptr; return; }
+    HRESULT hr = S_OK;
+    if (!g_hdvHost)  // the client has its host from ClientHdvHost already
+    {
+        hr = g_hdvComByHdv ? HdvInitEx()(g_system, HdvDeviceHostFlagInitializeComSecurity, &g_hdvHost)
+                           : HdvInitializeDeviceHost(g_system, &g_hdvHost);
+        std::printf("hdv: HdvInitializeDeviceHost%s: 0x%08lx\n", g_hdvComByHdv ? "Ex (COM security by HDV)" : "", hr);
+        if (FAILED(hr)) { g_hdvHost = nullptr; return; }
+    }
     for (auto& [kind, model] : g_hdvDevices)
     {
         if (kind == "test")
@@ -1757,7 +1947,7 @@ static void HdvAdd()
     {
         const GUID* cls = kind == "test" ? &kHdvTestClass : &kHdvGpuClass;
         const GUID* inst = kind == "test" ? &kHdvTestInstance : &kHdvGpuInstance;
-        if (!(kind == "test" ? g_hdvTest.handle : g_hdvGpu.handle)) continue;
+        if (!g_hdvInClient && !(kind == "test" ? g_hdvTest.handle : g_hdvGpu.handle)) continue;
         std::string req = "{\"ResourcePath\":\"VirtualMachine/Devices/FlexibleIov/" + GuidStr(*inst).substr(1, 36) +
                           "\",\"RequestType\":\"Add\",\"Settings\":{\"EmulatorId\":\"" + GuidStr(*cls).substr(1, 36) + "\",\"HostingModel\":\"" + model + "\"}}";
         HCS_OPERATION op = HcsCreateOperation(nullptr, nullptr);
@@ -4833,7 +5023,11 @@ static int ClientMain(unsigned short port)
     *wcsrchr(self, L'\\') = 0;
     SetCurrentDirectoryW(self);
     // One client per user session: --launch and the sign-in start may race.
-    g_clientMutex = CreateMutexW(nullptr, FALSE, L"Local\\WsaRebornHostClient");
+    // Per command port: a client on another port (--client <port>) runs beside one that cannot be ended (a process left
+    // in the kernel after it had hosted HDV devices kept the name and port 58610, 16.10.2026).
+    std::wstring mutexName = L"Local\\WsaRebornHostClient";
+    if (port != 58600) mutexName += L"-" + std::to_wstring(port);
+    g_clientMutex = CreateMutexW(nullptr, FALSE, mutexName.c_str());
     if (GetLastError() == ERROR_ALREADY_EXISTS) { std::printf("client: already running\n"); return 1; }
     ReadSettings();
     ApplyClipSetting();
@@ -4880,6 +5074,16 @@ static int ClientMain(unsigned short port)
     std::printf("client: runtime id %s, guest address %s via %s\n", id.c_str(), g_nicIp.c_str(), g_nicGateway.c_str());
     GuestSide(port);
     if (g_devHost.count("client")) { if (g_devHost.count("acl")) ProcessAclForVm(); ClientDeviceHost(); }
+    if (g_devHost.count("hdvclient") && SharesHaveHdv())
+    {
+        wchar_t svcDir[MAX_PATH];
+        ExpandEnvironmentStringsW(L"%ProgramData%\\WsaReborn", svcDir, MAX_PATH);
+        // A process of its own: one device host registers per process (HdvProxyDeviceHost), and wsldevicehost.dll's
+        // virtio-fs devices in this process got 0xc0370030 once our HDV host was registered here. The child dies with
+        // this process (a job that kills on close).
+        std::wstring objref = svcPid ? std::wstring(svcDir) + L"\\hdvsupport.objref" : L"hdvsupport.objref";
+        StartHdvHost(objref);
+    }
     DWORD session = 0;
     ProcessIdToSessionId(GetCurrentProcessId(), &session);
     std::ofstream("client.ready.tmp") << GetCurrentProcessId() << " " << session << " " << UserSid() << "\n";
@@ -5319,6 +5523,7 @@ int wmain(int argc, wchar_t** argv)
     if (argc >= 3 && !wcscmp(argv[1], L"--gfxstream-test")) return GfxstreamTest(argv[2], argc > 3 ? std::wcstoull(argv[3], nullptr, 16) : 0x11);
     if (argc >= 4 && !wcscmp(argv[1], L"--config"))
         return MakeConfig(Narrow(argv[2]), Narrow(argv[3]), argc > 4 ? _wtoi(argv[4]) : 4096, argc > 5 ? _wtoi(argv[5]) : 4);
+    if (argc >= 3 && !wcscmp(argv[1], L"--hdv-host")) return HdvHostMain(argv[2], argc > 3 ? argv[3] : nullptr);
     if (argc >= 2 && !wcscmp(argv[1], L"--client")) return ClientMain(argc > 2 ? (unsigned short)_wtoi(argv[2]) : 58600);
     if (argc >= 2 && !wcscmp(argv[1], L"--install")) return Install(argc > 2 ? argv[2] : nullptr);
     if (argc >= 2 && !wcscmp(argv[1], L"--uninstall")) return Uninstall();
@@ -5355,12 +5560,17 @@ static int RunVm(const wchar_t* config, unsigned short port, std::string log)
     }
 
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    // As WSL's service: default access checks, the device host calls back into this process.
-    CoInitializeSecurity(nullptr, -1, nullptr, nullptr, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_STATIC_CLOAKING, nullptr);
+    // As WSL's service: default access checks, the device host calls back into this process. With HDV devices
+    // (shares.txt "hdv" lines) HDV sets COM security itself (HdvInitializeDeviceHostEx, HdvInitializeComSecurity):
+    // under LocalSystem with our own settings HdvInitializeDeviceHost failed with 0x80070005 (the service, 16.10.2026).
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
     ReadSharesSettings();
     if (g_svc && !g_separateClient) { g_separateClient = true; if (!g_devHost.count("service")) g_devHost.insert("client"); }  // a service has no desktop
+    g_hdvInClient = g_separateClient && g_devHost.count("hdvclient") && SharesHaveHdv();
+    g_hdvComByHdv = !g_hdvInClient && SharesHaveHdv() && HdvInitEx();
+    if (!g_hdvComByHdv)
+        CoInitializeSecurity(nullptr, -1, nullptr, nullptr, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_STATIC_CLOAKING, nullptr);
     ResolveNic();
     DeleteFileW(L"runtime.txt");
 
@@ -5405,6 +5615,7 @@ static int RunVm(const wchar_t* config, unsigned short port, std::string log)
     std::printf("runtime id {%s}\n", m[1].str().c_str());
     // Like WslCoreVm: listen before the start, the guest connects within the first seconds.
     InitListen(runtimeId);
+    if (g_hdvInClient) WriteHdvSupport();
     if (g_separateClient)
     {
         // As WsaService hands the VM to WsaClient: the client listens on the guest's sockets before the start.
@@ -5431,7 +5642,9 @@ static int RunVm(const wchar_t* config, unsigned short port, std::string log)
     else
         GuestSide(port);
 
-    HdvInit();
+    HdvParse();
+    if (g_hdvInClient) std::printf("hdv: devices in the client\n");
+    else HdvCreate();
     op = HcsCreateOperation(nullptr, nullptr);
     HcsStartComputeSystem(g_system, op, nullptr);
     if (FAILED(Wait(op, "start"))) return 1;
