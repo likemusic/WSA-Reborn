@@ -1,6 +1,8 @@
 # Example shares.txt for wsa-reborn-host.exe (see AddShares() in wsa-reborn-host.cpp): tag, kind, Windows path or size in MB.
 # Nothing is expanded (no %VARIABLES%): write full paths; <host folder> below stands for the folder of the exe.
 dll C:\WSA\wsldevicehost.dll
+# vmid <GUID>         — the compute system id instead of the built-in one (hvsocket listeners are bound to it: a host
+#                        process that cannot be killed keeps the ports of its VM id until a reboot)
 # client separate   — the elevated process only runs the VM; RCM, windows, toasts, clipboard and files are served by
 #                     "wsa-reborn-host.exe --client" started in the same folder without elevation (as WsaService/WsaClient);
 #                     the client also hosts the virtio-fs device host (wsldevicehost.dll of the "dll" line)

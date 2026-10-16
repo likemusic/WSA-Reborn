@@ -100,8 +100,10 @@
 #pragma comment(lib, "winmm.lib")
 
 // The compute system id is a GUID, as WSL's machine id: the virtio device host (IPlan9FileSystem::CreateVirtioDevice)
-// answers E_INVALIDARG to any other name (12.10.2026).
+// answers E_INVALIDARG to any other name (12.10.2026). shares.txt "vmid <GUID>" replaces it: hvsocket listeners are bound
+// to the VM id, and a host process that could not be killed (16.10.2026) kept RCM 35002 of this one until a reboot.
 static const wchar_t* kVmId = L"5f3c1a7e-2b4d-4e8a-9c61-0d7b2e4f9a13";
+static std::wstring g_vmIdOverride;
 static const wchar_t* kComPipe = L"\\\\.\\pipe\\wsa-reborn-host-com1";
 static const wchar_t* kHvcPipe = L"\\\\.\\pipe\\wsa-reborn-host-hvc0";
 // adbd in the WSA guest listens on vsock 5555; on Hyper-V that is the service GUID <port>-facb-11e6-bd58-64006a7986d3.
@@ -489,6 +491,7 @@ static std::wstring SectionRoot(const std::wstring& tag)
 //   <tag> files <Windows dir>         — a directory share, as WSA's shared_tmp/shared_anr/shared_tombstone
 //   <tag> sections <size-MB>          — section-backed shared memory with a DAX window, as WSA's shared_mem; needs
 //                                       HighMmioGapInMB in config.json to cover it
+//   vmid <GUID>                       — the compute system id instead of kVmId (both halves read it; no braces)
 //   nic <HCN network id> [<ip>/<prefix> <gateway>]
 //                                     — a network adapter on that HCN network (--networks lists them: WSA's own is
 //                                       "WSLCore", "Default Switch" is the stock one), added the way WSA adds its NIC:
@@ -570,6 +573,12 @@ static void ReadSharesSettings()
         else if (first == "devicehost") { std::istringstream r(kind + " " + rest); for (std::string w; r >> w;) g_devHost.insert(w); }
         else if (first == "nic") { g_nicNetwork = kind; std::istringstream r(rest); r >> g_nicIp >> g_nicGateway; }
         else if (first == "shared_tmp" && kind == "files") g_sharedTmp = Widen(rest);
+        else if (first == "vmid")
+        {
+            GUID g{};
+            if (SUCCEEDED(CLSIDFromString(Widen("{" + kind + "}").c_str(), &g))) g_vmIdOverride = Widen(kind), kVmId = g_vmIdOverride.c_str();
+            else std::printf("vmid %s: not a GUID, %ls stays\n", kind.c_str(), kVmId);
+        }
     }
 }
 
@@ -1818,8 +1827,8 @@ static HRESULT ClientHdvHost(const std::wstring& objref)
     // cache of hosts (a null first argument never returned).
     using Fn = HRESULT(WINAPI*)(const GUID*, IUnknown*, HDV_HOST*);
     static Fn forProxy = (Fn)GetProcAddress(LoadLibraryW(L"vmdevicehost.dll"), "HdvInitializeDeviceHostForProxy");
-    GUID vm{};
-    CLSIDFromString((L"{" + std::wstring(kVmId) + L"}").c_str(), &vm);
+    GUID vm = g_runtimeId;  // --hdv-host gets the VM's id on its command line
+    if (vm == GUID{}) CLSIDFromString((L"{" + std::wstring(kVmId) + L"}").c_str(), &vm);
     hr = forProxy ? forProxy(&vm, support, &g_hdvHost) : HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
     std::printf("client: HdvInitializeDeviceHostForProxy: 0x%08lx\n", hr);
     if (FAILED(hr)) g_hdvHost = nullptr;
@@ -1999,7 +2008,7 @@ static void AddShares()
         std::vector<std::string> w;
         std::string first;
         if (!(in >> first) || first[0] == '#') continue;
-        if (first == "client" || first == "devicehost" || first == "hdv") continue;  // see ReadSharesSettings; hdv: HdvInit
+        if (first == "client" || first == "devicehost" || first == "vmid" || first == "hdv") continue;  // see ReadSharesSettings; hdv: HdvInit
         if (first == "clsid") { std::string g; in >> g; CLSIDFromString(Widen(g).c_str(), &clsid); continue; }
         if (first == "nic") { std::string n; in >> n; shares.push_back({"nic", "nic", n}); continue; }  // address: ResolveNic
         if (first == "device") { std::string c, e, t; in >> c >> e >> t; shares.push_back({t, "device", c, e}); continue; }
