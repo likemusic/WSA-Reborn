@@ -32,6 +32,12 @@
  * window type (toast, soft keyboard, system alerts/dialogs, application overlays) go as the pseudo task -<type>, for a
  * popup window of their own on the host. vendor.wsa.headless.task_windows=0 turns
  * this off. Everything SurfaceFlinger composes stays CLIENT as before.
+ *
+ * Display size from the host (17.10.2026): the host may send back on the same connection a struct DisplayRequest
+ * ("WSAD", width, height) — the window of the whole display in "scale_desktop resize", where Android lives in one
+ * window. The module takes it as a new mode (a new config id, the old one gone) and reports a hotplug CONNECTED of the
+ * same display, which SurfaceFlinger handles as a reconnection: it reads the configs again and recreates the display
+ * at the new size (SurfaceFlinger::processHotplug, "Reconnecting"). Density stays.
  */
 
 #define LOG_TAG "WsaHeadlessHwc"
@@ -57,6 +63,7 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <cstdio>
 #include <climits>
 #include <cstring>
@@ -71,7 +78,6 @@
 namespace {
 
 constexpr hwc2_display_t kDisplay = 1;
-constexpr hwc2_config_t kConfig = 1;
 
 struct Mode {
     int32_t width = 1280, height = 800, fps = 60, dpi = 200;
@@ -260,6 +266,14 @@ struct __attribute__((packed)) TaskRect {
     }
 };
 
+// Host -> guest: the size the display should have (the host's window of the whole display, "scale_desktop resize").
+struct __attribute__((packed)) DisplayRequest {
+    uint32_t magic = 0x44415357;  // "WSAD"
+    uint32_t version = 1;
+    uint32_t width = 0, height = 0;
+    uint32_t reserved[2] = {0, 0};
+};
+
 // The current tasks; the host closes the windows of tasks that are not listed any more.
 struct __attribute__((packed)) TaskListHeader {
     uint32_t magic = 0x4C415357;  // "WSAL"
@@ -277,7 +291,8 @@ struct TaskImage {
 // Latest-frame-only sender to the host.
 class FrameSink {
   public:
-    explicit FrameSink(int port) : port_(port) {
+    // onDisplay: the host asked for a display of width x height (called on the sink's reader thread).
+    FrameSink(int port, std::function<void(uint32_t, uint32_t)> onDisplay) : port_(port), onDisplay_(std::move(onDisplay)) {
         if (port_ > 0) thread_ = std::thread([this] { loop(); });
     }
     ~FrameSink() {
@@ -457,6 +472,7 @@ class FrameSink {
                 for (auto& [id, t] : tasks_) t.dirty = true;
             }
             connected_ = true;
+            std::thread reader([this, s] { readLoop(s); });
             while (true) {
                 FrameHeader h;
                 bool frame = false, sendList = false;
@@ -468,6 +484,9 @@ class FrameSink {
                     cv_.wait(l, [this] { return quit_ || pendingLocked(); });
                     if (quit_) {
                         connected_ = false;
+                        l.unlock();
+                        shutdown(s, SHUT_RDWR);
+                        reader.join();
                         close(s);
                         return;
                     }
@@ -499,12 +518,42 @@ class FrameSink {
                 if (!ok) break;
             }
             connected_ = false;
+            shutdown(s, SHUT_RDWR);  // ends the reader's recv
+            reader.join();
             close(s);
             ALOGI("frame sink: host went away");
         }
     }
 
+    static bool recvAll(int s, void* data, size_t n) {
+        char* p = static_cast<char*>(data);
+        while (n) {
+            ssize_t r = recv(s, p, n, 0);
+            if (r <= 0) {
+                if (r < 0 && errno == EINTR) continue;
+                return false;
+            }
+            p += r;
+            n -= (size_t)r;
+        }
+        return true;
+    }
+
+    // What the host sends back: display requests only. Anything else ends the reading (the frames keep going).
+    void readLoop(int s) {
+        DisplayRequest r;
+        while (recvAll(s, &r, sizeof r)) {
+            if (r.magic != DisplayRequest{}.magic || r.version != 1) {
+                ALOGW("frame sink: unknown message 0x%08x from the host, not reading any more", r.magic);
+                return;
+            }
+            ALOGI("frame sink: the host asks for a %ux%u display", r.width, r.height);
+            if (onDisplay_) onDisplay_(r.width, r.height);
+        }
+    }
+
     const int port_;
+    const std::function<void(uint32_t, uint32_t)> onDisplay_;
     std::thread thread_;
     std::mutex lock_;
     std::condition_variable cv_;
@@ -569,7 +618,8 @@ struct TaskLayer {
 
 struct Device {
     hwc2_device_t base;  // first member: the hwc2_device_t* we hand out is a Device*
-    Mode mode;
+    Mode mode;                 // under lock once the device is open
+    hwc2_config_t config = 1;  // the one config of the mode; a new id per size the host asks for
     std::mutex lock;
     std::map<hwc2_layer_t, Layer> layers;
     hwc2_layer_t nextLayer = 1;
@@ -627,6 +677,25 @@ struct Device {
 };
 
 Device* dev(hwc2_device_t* d) { return reinterpret_cast<Device*>(d); }
+
+// The host asked for another display size: a new mode under a new config id, then a hotplug CONNECTED of the same
+// display — SurfaceFlinger reads the configs again and recreates the display ("Reconnecting").
+void setDisplaySize(Device* D, uint32_t w, uint32_t h) {
+    if (w < 320 || h < 240 || w > 8192 || h > 8192) {
+        ALOGW("display %ux%u asked by the host: out of range, ignored", w, h);
+        return;
+    }
+    std::unique_lock<std::mutex> l(D->lock);
+    if (D->mode.width == (int32_t)w && D->mode.height == (int32_t)h) return;
+    ALOGI("display %dx%d -> %ux%u (config %u -> %u)", D->mode.width, D->mode.height, w, h, D->config, D->config + 1);
+    D->mode.width = (int32_t)w;
+    D->mode.height = (int32_t)h;
+    D->config++;
+    auto cb = D->hotplug;
+    auto data = D->hotplugData;
+    l.unlock();
+    if (cb) cb(data, kDisplay, HWC2_CONNECTION_CONNECTED);
+}
 
 #define CHECK_DISPLAY(display) \
     if ((display) != kDisplay) return HWC2_ERROR_BAD_DISPLAY
@@ -689,9 +758,10 @@ void dump(hwc2_device_t* d, uint32_t* outSize, char* outBuffer) {
 
 // ---- display: configs and properties
 
-int32_t getDisplayConfigs(hwc2_device_t*, hwc2_display_t display, uint32_t* outNum, hwc2_config_t* outConfigs) {
+int32_t getDisplayConfigs(hwc2_device_t* d, hwc2_display_t display, uint32_t* outNum, hwc2_config_t* outConfigs) {
     CHECK_DISPLAY(display);
-    if (outConfigs && *outNum >= 1) outConfigs[0] = kConfig;
+    std::lock_guard<std::mutex> l(dev(d)->lock);
+    if (outConfigs && *outNum >= 1) outConfigs[0] = dev(d)->config;
     *outNum = 1;
     return HWC2_ERROR_NONE;
 }
@@ -699,7 +769,8 @@ int32_t getDisplayConfigs(hwc2_device_t*, hwc2_display_t display, uint32_t* outN
 int32_t getDisplayAttribute(hwc2_device_t* d, hwc2_display_t display, hwc2_config_t config, int32_t attribute,
                             int32_t* outValue) {
     CHECK_DISPLAY(display);
-    if (config != kConfig) return HWC2_ERROR_BAD_CONFIG;
+    std::lock_guard<std::mutex> l(dev(d)->lock);
+    if (config != dev(d)->config) return HWC2_ERROR_BAD_CONFIG;
     const Mode& m = dev(d)->mode;
     switch (attribute) {
         case HWC2_ATTRIBUTE_WIDTH: *outValue = m.width; break;
@@ -713,22 +784,27 @@ int32_t getDisplayAttribute(hwc2_device_t* d, hwc2_display_t display, hwc2_confi
     return HWC2_ERROR_NONE;
 }
 
-int32_t getActiveConfig(hwc2_device_t*, hwc2_display_t display, hwc2_config_t* outConfig) {
+int32_t getActiveConfig(hwc2_device_t* d, hwc2_display_t display, hwc2_config_t* outConfig) {
     CHECK_DISPLAY(display);
-    *outConfig = kConfig;
+    std::lock_guard<std::mutex> l(dev(d)->lock);
+    *outConfig = dev(d)->config;
     return HWC2_ERROR_NONE;
 }
 
-int32_t setActiveConfig(hwc2_device_t*, hwc2_display_t display, hwc2_config_t config) {
+int32_t setActiveConfig(hwc2_device_t* d, hwc2_display_t display, hwc2_config_t config) {
     CHECK_DISPLAY(display);
-    return config == kConfig ? HWC2_ERROR_NONE : HWC2_ERROR_BAD_CONFIG;
+    std::lock_guard<std::mutex> l(dev(d)->lock);
+    return config == dev(d)->config ? HWC2_ERROR_NONE : HWC2_ERROR_BAD_CONFIG;
 }
 
-int32_t setActiveConfigWithConstraints(hwc2_device_t*, hwc2_display_t display, hwc2_config_t config,
+int32_t setActiveConfigWithConstraints(hwc2_device_t* d, hwc2_display_t display, hwc2_config_t config,
                                        hwc_vsync_period_change_constraints_t*,
                                        hwc_vsync_period_change_timeline_t* outTimeline) {
     CHECK_DISPLAY(display);
-    if (config != kConfig) return HWC2_ERROR_BAD_CONFIG;
+    {
+        std::lock_guard<std::mutex> l(dev(d)->lock);
+        if (config != dev(d)->config) return HWC2_ERROR_BAD_CONFIG;
+    }
     if (outTimeline) {
         outTimeline->newVsyncAppliedTimeNanos = nowNs();
         outTimeline->refreshRequired = 0;
@@ -1385,7 +1461,8 @@ int openDevice(const hw_module_t* module, const char* name, hw_device_t** outDev
     D->base.getFunction = getFunction;
     D->mode = readMode();
     D->vsyncThread = std::thread([D] { D->vsyncLoop(); });
-    D->sink = new FrameSink(property_get_int32("vendor.wsa.headless.frame_port", 50100));
+    D->sink = new FrameSink(property_get_int32("vendor.wsa.headless.frame_port", 50100),
+                            [D](uint32_t w, uint32_t h) { setDisplaySize(D, w, h); });
     D->taskWindows = property_get_bool("vendor.wsa.headless.task_windows", true);
     ALOGI("headless display %dx%d@%d, %d dpi", D->mode.width, D->mode.height, D->mode.fps, D->mode.dpi);
     *outDevice = &D->base.common;

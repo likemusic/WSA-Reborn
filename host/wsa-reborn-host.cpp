@@ -641,8 +641,12 @@ static void ReadSharesSettings()
 //       fit keeps the proportions with bars (the default), stretch fills the client area, resize asks the guest for the
 //       new task size (Shell UpdateAndroidWindow, as WsaClient) so the app lays itself out again and the picture is
 //       pixel for pixel. Read by the client (17.10.2026, the owner's wish of 16.10.2026, backlog).
-//   scale_desktop fit|stretch — the same for the window of the whole guest display (resizing the guest display itself
-//       is in the backlog).
+//   scale_desktop fit|stretch|resize — the same for the window of the whole guest display; resize makes the guest
+//       display the size of that window (our HWC2 reconnects the display at the new size, FrameSendDisplaySize) — then
+//       Android lives in this one window, as in an emulator, and there are no app windows: those map the guest display
+//       1:1 onto the work area (17.10.2026, the owner's decision).
+//   desktop_window show|hide — the window of the whole guest display at the client's start: hidden by default (WSA has
+//       no such window; the tray icon shows it). Always shown with "scale_desktop resize". 17.10.2026.
 enum { kContinuous = 0, kAsNeeded = 1, kPartial = 2 };  // WSA's VMLifeCycleMode values
 static const char* const kLifecycleNames[] = {"continuous", "asneeded", "partial"};
 static int g_lifecycle = kAsNeeded, g_memoryMb = 0;
@@ -652,6 +656,9 @@ static std::atomic<int> g_micSetting{-1};  // settings.txt "microphone", the sam
 enum { kScaleFit = 0, kScaleStretch = 1, kScaleResize = 2 };
 static const char* const kScaleNames[] = {"fit", "stretch", "resize"};
 static std::atomic<int> g_scaleApps{kScaleFit}, g_scaleDesktop{kScaleFit};  // settings.txt "scale_apps", "scale_desktop"
+static std::atomic<bool> g_desktopWindow{false};                             // settings.txt "desktop_window"
+static void DesktopModeChanged();  // the frame window follows scale_desktop / desktop_window (defined with it)
+static void FrameSendDisplaySize(int w, int h);
 
 static void ReadSettings()
 {
@@ -661,6 +668,7 @@ static void ReadSettings()
     g_lifecycle = ram < 16 * gb ? kAsNeeded : kPartial;
     g_clipSetting = -1;
     int mic = -1, apps = kScaleFit, desktop = kScaleFit;
+    bool desktopWindow = false;
     std::ifstream f(UserFile(L"settings.txt"));
     for (std::string line; std::getline(f, line);)
     {
@@ -677,8 +685,9 @@ static void ReadSettings()
             if (value == kScaleNames[i])
             {
                 if (key == "scale_apps") apps = i;
-                if (key == "scale_desktop" && i != kScaleResize) desktop = i;
+                if (key == "scale_desktop") desktop = i;
             }
+        if (key == "desktop_window") desktopWindow = value == "show";
         if (key == "idle") g_idleMinutes = (std::max)(0.05, std::atof(value.c_str()));
         if (key == "memory")
             g_memoryMb = value == "default" ? (ram >= 12 * gb ? 6144 : ram >= 8 * gb ? 4096 : ram > 4 * gb ? 3072 : 2048)
@@ -686,7 +695,9 @@ static void ReadSettings()
     }
     g_micSetting = mic;
     g_scaleApps = apps;
-    g_scaleDesktop = desktop;
+    const bool scaleChanged = g_scaleDesktop.exchange(desktop) != desktop;  // both exchanged, then compared
+    const bool windowChanged = g_desktopWindow.exchange(desktopWindow) != desktopWindow;
+    if (scaleChanged || windowChanged) DesktopModeChanged();
 }
 // The virtio device host under a LocalSystem service: HdvProxyDeviceHost answered E_ACCESSDENIED (15.10.2026) for the
 // device host loaded into the service process, while WSL's LocalSystem service gets it working with the device host in
@@ -2618,9 +2629,15 @@ struct FrameHeader { unsigned magic, version, width, height, stride, format; uns
 struct TaskHeader { unsigned magic, version; int taskId, x, y; unsigned width, height, stride, format, reserved; unsigned long long frame; };
 struct TaskListHeader { unsigned magic, version, count, reserved; unsigned long long frame; };
 struct TaskRect { int taskId, x, y, width, height; };
+// Host -> guest on the same connection (17.10.2026): the size the guest display should have ("scale_desktop resize").
+struct DisplayRequest { unsigned magic, version, width, height, reserved[2]; };
 #pragma pack(pop)
-static const unsigned kMagicFrame = 0x46415357, kMagicTask = 0x54415357, kMagicList = 0x4C415357;
+static const unsigned kMagicFrame = 0x46415357, kMagicTask = 0x54415357, kMagicList = 0x4C415357, kMagicDisplay = 0x44415357;
 static const UINT WM_APP_SYNC_TASKS = WM_APP + 1;
+static const UINT WM_APP_DESKTOP_MODE = WM_APP + 7;  // scale_desktop / desktop_window changed, or the guest (re)connected
+static std::mutex g_frameConnLock;
+static SOCKET g_frameConn = INVALID_SOCKET;  // the HWC2's connection, under g_frameConnLock
+static int g_displayAskedW = 0, g_displayAskedH = 0;  // the last DisplayRequest on it
 
 struct TaskWin
 {
@@ -2756,6 +2773,26 @@ static void ShellMoveTask(int task, int left, int top, int w, int h)
     SendShell(ShellOf(2, 3, u));
     RcmLog("shell: SENT UpdateAndroidWindow task " + std::to_string(task) + " " + std::to_string(left) + "," + std::to_string(top) + " " +
            std::to_string(w) + "x" + std::to_string(h));
+}
+
+// The guest display's windowing mode (our field 100 of UpdateAndroidDisplayInfo.DisplayParameters, WsaShellBridge):
+// fullscreen (1) while Android lives in the one window of "scale_desktop resize", freeform (5) — what the bridge sets
+// when it starts — for a window per task. Sent when it differs from what the guest has. 17.10.2026.
+static int g_shellWindowingMode = 5;  // under g_shellLock: what the guest has
+static void ShellSendWindowingMode(bool oneWindow)
+{
+    const int mode = oneWindow ? 1 : 5;
+    {
+        std::lock_guard<std::mutex> l(g_shellLock);
+        if (g_shell == INVALID_SOCKET || g_shellWindowingMode == mode) return;
+        g_shellWindowingMode = mode;
+    }
+    std::string dp, info;
+    PbInt(dp, 1, 0);  // wsaDisplayId: the HWC2's only display
+    PbInt(dp, 100, (unsigned)mode);
+    PbBytes(info, 1, dp);
+    SendShell(ShellOf(8, 9, info));
+    RcmLog("shell: SENT UpdateAndroidDisplayInfo windowingMode " + std::to_string(mode));
 }
 
 // A guest request on the Shell channel: what it means for the task windows.
@@ -3881,8 +3918,9 @@ static void RcmChannel(std::string name, unsigned port)
     }
     if (name == "Shell")
     {
-        { std::lock_guard<std::mutex> l(g_shellLock); g_shell = h; }
+        { std::lock_guard<std::mutex> l(g_shellLock); g_shell = h; g_shellWindowingMode = 5; }  // the bridge starts freeform
         { std::lock_guard<std::mutex> l(g_frameLock); g_shellUp = true; }
+        if (g_frameWnd) PostMessageW(g_frameWnd, WM_APP_DESKTOP_MODE, 0, 0);  // fullscreen again in "scale_desktop resize"
     }
     if (name.find("SysPrep") != std::string::npos)
     {
@@ -4288,9 +4326,44 @@ static LRESULT CALLBACK TaskWndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcW(w, msg, wp, lp);
 }
 
+// The window of the whole display after a change of scale_desktop / desktop_window: shown with desktop_window show or
+// in "scale_desktop resize" (Android in this one window), hidden otherwise; the guest display asked to be its client
+// size in resize, else the size it booted with (the work area). Task windows go or come back (SyncTaskWindows).
+static std::atomic<DWORD> g_desktopModeAt{0};  // when the guest display last changed size or mode (SyncTaskWindows)
+static void ApplyDesktopMode(HWND w)
+{
+    const bool one = g_scaleDesktop == kScaleResize;
+    static int last = -1;
+    if (last != (int)one) g_desktopModeAt = GetTickCount() | 1, last = one;
+    if ((one || g_desktopWindow) && !IsWindowVisible(w)) ShowWindow(w, SW_SHOWNOACTIVATE);
+    else if (!one && !g_desktopWindow && IsWindowVisible(w)) ShowWindow(w, SW_HIDE);
+    RECT rc{};
+    GetClientRect(w, &rc);
+    if (one && !IsIconic(w) && rc.right >= 320 && rc.bottom >= 240) FrameSendDisplaySize(rc.right & ~1, rc.bottom & ~1);
+    else if (!one) FrameSendDisplaySize(GuestDisplay().w, GuestDisplay().h);
+    ShellSendWindowingMode(one);
+    SyncTaskWindows();
+}
+
+static void DesktopModeChanged()
+{
+    std::printf("settings: scale_desktop %s, desktop_window %s\n", kScaleNames[g_scaleDesktop], g_desktopWindow ? "show" : "hide");
+    if (g_frameWnd) PostMessageW(g_frameWnd, WM_APP_DESKTOP_MODE, 0, 0);
+}
+
 static LRESULT CALLBACK FrameWndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
 {
     if (msg == WM_APP_SYNC_TASKS) { SyncTaskWindows(); return 0; }
+    if (msg == WM_APP_DESKTOP_MODE) { ApplyDesktopMode(w); return 0; }
+    // "scale_desktop resize": the guest display follows the window — at the end of a drag and on maximize/restore, not
+    // on every step (each new size recreates the display and the apps get a configuration change).
+    if (g_scaleDesktop == kScaleResize && (msg == WM_EXITSIZEMOVE || (msg == WM_SIZE && (wp == SIZE_MAXIMIZED || wp == SIZE_RESTORED) && !GetPropW(w, L"WsaSizing"))))
+    {
+        if (msg == WM_EXITSIZEMOVE) RemovePropW(w, L"WsaSizing");
+        ApplyDesktopMode(w);
+    }
+    if (msg == WM_ENTERSIZEMOVE) SetPropW(w, L"WsaSizing", (HANDLE)1);
+    if (msg == WM_EXITSIZEMOVE) RemovePropW(w, L"WsaSizing");
     if (msg == WM_APP_CLIP_SET) { ClipSetWindows(*(const ClipItems*)lp); return 0; }
     if (msg == WM_CLIPBOARDUPDATE) { ClipToGuest(); return 0; }
     if (msg == WM_APP_TRAY)
@@ -4335,15 +4408,26 @@ static void SyncTaskWindows()
         for (auto it = g_tasks.begin(); it != g_tasks.end();)
         {
             TaskWin& t = it->second;
+            // "scale_desktop resize": Android lives in the window of the whole display, no window per task.
+            if (g_scaleDesktop == kScaleResize && t.listed)
+            {
+                if (t.hwnd) { destroy.push_back(t.hwnd); t.hwnd = nullptr; t.shownW = t.shownH = 0; }
+                ++it;
+                continue;
+            }
             // A task the guest still has but no longer draws went back (minimized here, or moved back in the guest — the
             // list may come before MinimizeClientWindow): its window stays minimized and goes with the guest's RemoveWindow.
             if (!t.listed && t.hwnd && it->first > 0 && g_shellUp && g_shellTasks.count(it->first))
             {
                 // ...but not right after the user restored it: the guest brings the task front and draws it again a
                 // little later, and minimizing it in between undid the restore (seen 15.10.2026, trestore 2 s after tmin).
+                // Nor while the display is being recreated after "scale_desktop" changed: the guest draws nothing for a
+                // moment, and the task that had been fullscreen in the one window got its window minimized (17.10.2026).
                 const UINT_PTR restoredAt = (UINT_PTR)GetPropW(t.hwnd, L"WsaRestoredAt");
                 const bool justRestored = restoredAt && (DWORD)(GetTickCount() - (DWORD)restoredAt) < 3000;
-                if (!IsIconic(t.hwnd) && !justRestored) PostMessageW(t.hwnd, WM_APP_MINIMIZE_TASK, 0, 0);
+                const DWORD modeAt = g_desktopModeAt;
+                const bool modeChanging = modeAt && GetTickCount() - modeAt < 3000;
+                if (!IsIconic(t.hwnd) && !justRestored && !modeChanging) PostMessageW(t.hwnd, WM_APP_MINIMIZE_TASK, 0, 0);
                 ++it;
                 continue;
             }
@@ -4454,7 +4538,9 @@ static void FrameWindowThread()
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
     g_frameWnd = CreateWindowW(wc.lpszClassName, (g_instance.empty() ? std::wstring(L"WSA headless (wsa-reborn-host)") : L"WSA headless (wsa-reborn-host, " + g_instance + L")").c_str(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                                r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
-    SetWindowPos(g_frameWnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    // Hidden unless desktop_window show or scale_desktop resize (ApplyDesktopMode); under the other windows when shown.
+    SetWindowPos(g_frameWnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                 (g_desktopWindow || g_scaleDesktop == kScaleResize ? SWP_SHOWWINDOW : 0));
     TrayAdd();
     AddClipboardFormatListener(g_frameWnd);
     MSG msg;
@@ -4535,9 +4621,26 @@ static bool RecvAll(SOCKET s, void* p, size_t n)
     return true;
 }
 
+// Asks the guest for a display of w x h (our HWC2 reconnects it at that size); nothing while no HWC2 is connected or
+// when that size was the last asked on this connection.
+static void FrameSendDisplaySize(int w, int h)
+{
+    std::lock_guard<std::mutex> l(g_frameConnLock);
+    if (g_frameConn == INVALID_SOCKET || (w == g_displayAskedW && h == g_displayAskedH)) return;
+    DisplayRequest r{kMagicDisplay, 1, (unsigned)w, (unsigned)h, {0, 0}};
+    const bool ok = send(g_frameConn, (const char*)&r, sizeof r, 0) == sizeof r;
+    std::printf("display: asked the guest for %dx%d%s\n", w, h, ok ? "" : " — send failed");
+    if (ok) g_displayAskedW = w, g_displayAskedH = h;
+}
+
 static void FrameConn(SOCKET c)
 {
     std::printf("frames: guest connected\n");
+    {
+        std::lock_guard<std::mutex> l(g_frameConnLock);
+        g_frameConn = c, g_displayAskedW = g_displayAskedH = 0;
+    }
+    if (g_frameWnd) PostMessageW(g_frameWnd, WM_APP_DESKTOP_MODE, 0, 0);  // the size the guest display should have now
     std::vector<unsigned char> raw;
     ULONGLONG t0 = GetTickCount64();
     unsigned long long n0 = 0, n = 0;
@@ -4614,6 +4717,10 @@ static void FrameConn(SOCKET c)
         g_frameLastAt = GetTickCount64();
     }
     std::printf("frames: guest went away (%d)\n", WSAGetLastError());
+    {
+        std::lock_guard<std::mutex> l(g_frameConnLock);
+        if (g_frameConn == c) g_frameConn = INVALID_SOCKET;
+    }
     closesocket(c);
 }
 
@@ -4656,6 +4763,9 @@ static void FrameListen()
 //   tsize <task> <w> <h>   resize the task's client area to w x h px, then end of a move (as tmove; the new size goes
 //                          to the guest with "scale_apps resize")
 //   tmax <task>            maximize the task's window (trestore restores it)
+//   display                the window of the whole display: client size, shown/hidden, the guest's frame size, the size
+//                          last asked of the guest; dsize <w> <h> resizes its client area, then end of a move (with
+//                          "scale_desktop resize" the guest display follows)
 // and answers "ok <requests sent so far>" or an error. The window must not be minimized (client area = scale).
 static void InputControl(unsigned short port)
 {
@@ -4803,6 +4913,36 @@ static void InputControl(unsigned short port)
                 else if (cmd == "ndismiss") ToastDismissed(last);
                 else ToastActivated("t=" + last + "&a=" + std::to_string(button), reply);
                 answer = last.empty() && cmd != "nclick" ? "error: no notification toast\n" : "ok\n";
+                send(c, answer.data(), (int)answer.size(), 0);
+                continue;
+            }
+            if (cmd == "display" || cmd == "dsize")
+            {
+                // The window of the whole display: its client size and visibility, the guest's frame size, the size last
+                // asked of the guest; dsize resizes the client area as a user's drag would (then end of a move).
+                int w = 0, h = 0;
+                if (cmd == "dsize" && (!(in >> w >> h) || w < 320 || h < 240)) answer = "error: dsize w h (at least 320 240)\n";
+                else if (!g_frameWnd) answer = "error: no frame window\n";
+                else if (cmd == "dsize")
+                {
+                    RECT r{0, 0, w, h};
+                    AdjustWindowRect(&r, (DWORD)GetWindowLongPtrW(g_frameWnd, GWL_STYLE), FALSE);
+                    SetWindowPos(g_frameWnd, nullptr, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                    PostMessageW(g_frameWnd, WM_EXITSIZEMOVE, 0, 0);
+                    answer = "ok\n";
+                }
+                else
+                {
+                    RECT r{};
+                    GetClientRect(g_frameWnd, &r);
+                    unsigned fw2, fh2;
+                    { std::lock_guard<std::mutex> lk(g_frameLock); fw2 = g_frameW, fh2 = g_frameH; }
+                    int aw, ah;
+                    { std::lock_guard<std::mutex> lk(g_frameConnLock); aw = g_displayAskedW, ah = g_displayAskedH; }
+                    answer = "window " + std::to_string(r.right) + "x" + std::to_string(r.bottom) + (IsWindowVisible(g_frameWnd) ? IsIconic(g_frameWnd) ? " minimized" : " shown" : " hidden") +
+                             ", frame " + std::to_string(fw2) + "x" + std::to_string(fh2) + ", asked " + std::to_string(aw) + "x" + std::to_string(ah) +
+                             ", scale_desktop " + kScaleNames[g_scaleDesktop] + "\n";
+                }
                 send(c, answer.data(), (int)answer.size(), 0);
                 continue;
             }
@@ -5512,12 +5652,13 @@ static int SetLifecycle(const wchar_t* mode)
 // start at sign-in as --lifecycle does. "--settings-test <lifecycle> <idle> <memory> <clipboard>" runs the same window
 // hidden, prints what it loaded, sets the controls, presses Save and prints the file: a check without a window on the
 // desktop. 16.10.2026.
-enum { kIdRadio = 100, kIdIdle = 110, kIdMemory = 111, kIdClip = 112, kIdState = 113, kIdTurnOff = 114, kIdMic = 115, kIdScaleApps = 116, kIdScaleDesktop = 117, kIdSave = IDOK, kIdClose = IDCANCEL };
+enum { kIdRadio = 100, kIdIdle = 110, kIdMemory = 111, kIdClip = 112, kIdState = 113, kIdTurnOff = 114, kIdMic = 115, kIdScaleApps = 116, kIdScaleDesktop = 117, kIdDesktopWindow = 118, kIdSave = IDOK, kIdClose = IDCANCEL };
 static const wchar_t* const kLifecycleLabels[] = {
     L"Continuous — the subsystem runs from sign-in and is always ready",
     L"As needed — starts with an app, turns off when no app is open",
     L"Partially running — starts at sign-in, restarts when no app is open"};
 static const wchar_t* const kScaleLabels[] = {L"Fit, keep proportions", L"Stretch to the window", L"Resize the Android window"};
+static const wchar_t* const kScaleDesktopResize = L"Resize Android (one window)";  // no app windows then
 static const int kMemoryGb[] = {2, 3, 4, 6, 8, 12, 16};  // the combo: [0] from config.json, [1] default, then these
 static bool g_settingsTest;  // --settings-test: messages to stdout, no message boxes
 
@@ -5572,6 +5713,7 @@ static void SettingsLoad(HWND w)
     Button_SetCheck(GetDlgItem(w, kIdMic), g_micSetting == 1 ? BST_CHECKED : BST_UNCHECKED);
     ComboBox_SetCurSel(GetDlgItem(w, kIdScaleApps), g_scaleApps.load());
     ComboBox_SetCurSel(GetDlgItem(w, kIdScaleDesktop), g_scaleDesktop.load());
+    Button_SetCheck(GetDlgItem(w, kIdDesktopWindow), g_desktopWindow ? BST_CHECKED : BST_UNCHECKED);
 }
 
 static bool SettingsSave(HWND w)
@@ -5591,7 +5733,8 @@ static bool SettingsSave(HWND w)
                              {"clipboard", Button_GetCheck(GetDlgItem(w, kIdClip)) == BST_CHECKED ? "on" : "off"},
                              {"microphone", Button_GetCheck(GetDlgItem(w, kIdMic)) == BST_CHECKED ? "on" : "off"},
                              {"scale_apps", kScaleNames[(std::max)(0, ComboBox_GetCurSel(GetDlgItem(w, kIdScaleApps)))]},
-                             {"scale_desktop", kScaleNames[(std::max)(0, ComboBox_GetCurSel(GetDlgItem(w, kIdScaleDesktop)))]}});
+                             {"scale_desktop", kScaleNames[(std::max)(0, ComboBox_GetCurSel(GetDlgItem(w, kIdScaleDesktop)))]},
+                             {"desktop_window", Button_GetCheck(GetDlgItem(w, kIdDesktopWindow)) == BST_CHECKED ? "show" : "hide"}});
     LSTATUS rc = SetSignInStart(m != kAsNeeded);
     std::printf("settings: settings.txt %s, start at sign-in %s: %s\n", ok ? "written" : "NOT written", m == kAsNeeded ? "removed" : "set", rc ? "FAILED" : "ok");
     if (!ok || rc) SettingsMessage(w, ok ? L"Cannot set the start at sign-in." : L"Cannot write settings.txt.", MB_ICONERROR);
@@ -5642,7 +5785,7 @@ static HWND SettingsCreate(bool visible)
     static const std::wstring cls = Inst(L"WsaRebornHostSettings");
     wc.lpszClassName = cls.c_str();
     RegisterClassW(&wc);
-    RECT r{0, 0, px(520), px(466)};
+    RECT r{0, 0, px(520), px(494)};
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRectExForDpi(&r, style, FALSE, 0, dpi);
     HWND w = CreateWindowExW(0, wc.lpszClassName, L"WSA-Reborn host — settings", style, CW_USEDEFAULT, CW_USEDEFAULT,
@@ -5674,13 +5817,14 @@ static HWND SettingsCreate(bool visible)
     for (int i = 0; i < 3; i++)
     {
         SendMessageW(apps, CB_ADDSTRING, 0, (LPARAM)kScaleLabels[i]);
-        if (i != kScaleResize) SendMessageW(desktop, CB_ADDSTRING, 0, (LPARAM)kScaleLabels[i]);  // the guest display keeps its size (backlog)
+        SendMessageW(desktop, CB_ADDSTRING, 0, (LPARAM)(i == kScaleResize ? kScaleDesktopResize : kScaleLabels[i]));
     }
-    add(L"STATIC", L"", SS_LEFT, 12, 348, 340, 20, kIdState);
-    add(L"BUTTON", L"Turn off", BS_PUSHBUTTON | WS_TABSTOP, 360, 342, 148, 30, kIdTurnOff);
-    add(L"STATIC", L"Saved settings apply to a running client within seconds.", SS_LEFT, 12, 392, 496, 20, -1);
-    add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON | WS_TABSTOP, 252, 424, 124, 30, kIdSave);
-    add(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, 384, 424, 124, 30, kIdClose);
+    add(L"BUTTON", L"Show the whole display's window at start (the tray icon shows it too)", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 334, 496, 24, kIdDesktopWindow);
+    add(L"STATIC", L"", SS_LEFT, 12, 376, 340, 20, kIdState);
+    add(L"BUTTON", L"Turn off", BS_PUSHBUTTON | WS_TABSTOP, 360, 370, 148, 30, kIdTurnOff);
+    add(L"STATIC", L"Saved settings apply to a running client within seconds.", SS_LEFT, 12, 420, 496, 20, -1);
+    add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON | WS_TABSTOP, 252, 452, 124, 30, kIdSave);
+    add(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, 384, 452, 124, 30, kIdClose);
     SettingsLoad(w);
     SettingsState(w);
     SetTimer(w, 1, 2000, nullptr);
@@ -5702,7 +5846,7 @@ static int SettingsWindow()
 
 static int SettingsTest(int argc, wchar_t** argv)
 {
-    if (argc < 6) { std::printf("--settings-test <lifecycle> <idle> <memory: config|default|GB> <clipboard on|off> [<microphone on|off> [<scale_apps> <scale_desktop>]]\n"); return 2; }
+    if (argc < 6) { std::printf("--settings-test <lifecycle> <idle> <memory: config|default|GB> <clipboard on|off> [<microphone on|off> [<scale_apps> <scale_desktop> [<desktop_window show|hide>]]]\n"); return 2; }
     g_settingsTest = true;
     HWND w = SettingsCreate(false);
     auto show = [&](const char* when) {
@@ -5715,9 +5859,10 @@ static int SettingsTest(int argc, wchar_t** argv)
         SendMessageW(combo, CB_GETLBTEXT, ComboBox_GetCurSel(combo), (LPARAM)mem);
         GetDlgItemTextW(w, kIdState, state, 128);
         const int sa = ComboBox_GetCurSel(GetDlgItem(w, kIdScaleApps)), sd = ComboBox_GetCurSel(GetDlgItem(w, kIdScaleDesktop));
-        std::printf("%s: lifecycle %s, idle %ls, memory %ls, clipboard %s, microphone %s, apps %s, desktop %s; %ls (Turn off %s)\n", when, m < 0 ? "-" : kLifecycleNames[m], idle, mem,
+        std::printf("%s: lifecycle %s, idle %ls, memory %ls, clipboard %s, microphone %s, apps %s, desktop %s, desktop window %s; %ls (Turn off %s)\n", when, m < 0 ? "-" : kLifecycleNames[m], idle, mem,
                     Button_GetCheck(GetDlgItem(w, kIdClip)) == BST_CHECKED ? "on" : "off", Button_GetCheck(GetDlgItem(w, kIdMic)) == BST_CHECKED ? "on" : "off",
-                    sa < 0 ? "-" : kScaleNames[sa], sd < 0 ? "-" : kScaleNames[sd], state,
+                    sa < 0 ? "-" : kScaleNames[sa], sd < 0 ? "-" : kScaleNames[sd],
+                    Button_GetCheck(GetDlgItem(w, kIdDesktopWindow)) == BST_CHECKED ? "show" : "hide", state,
                     IsWindowEnabled(GetDlgItem(w, kIdTurnOff)) ? "enabled" : "disabled");
     };
     show("loaded");
@@ -5733,6 +5878,7 @@ static int SettingsTest(int argc, wchar_t** argv)
     for (int a = 7; a < 9 && a < argc; a++)
         for (int i = 0; i < 3; i++)
             if (Narrow(argv[a]) == kScaleNames[i]) ComboBox_SetCurSel(GetDlgItem(w, a == 7 ? kIdScaleApps : kIdScaleDesktop), i);
+    if (argc > 9) Button_SetCheck(GetDlgItem(w, kIdDesktopWindow), !wcscmp(argv[9], L"show") ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(w, WM_COMMAND, MAKEWPARAM(kIdSave, BN_CLICKED), 0);
     show("saved");
     std::ifstream f(ExeDir() + L"\\settings.txt");

@@ -95,14 +95,15 @@ memory default          # GB, or default: 6 GB from 12 GB of RAM, 4 from 8, 3 ab
 clipboard on            # shared clipboard with Windows; off when the line is missing
 microphone on           # Android's recording from Windows' default microphone; off (silence) when the line is missing
 scale_apps resize       # an app window resized or maximized: fit (default) | stretch | resize — see below
-scale_desktop fit       # the window of the whole Android display: fit (default) | stretch
+scale_desktop fit       # the window of the whole Android display: fit (default) | stretch | resize — see below
+desktop_window hide     # the window of the whole Android display at start: hide (default) | show; the tray icon shows it
 ```
 
 The client re-reads the file every 5 seconds; `lifecycle`, `idle`, `clipboard`, `microphone` and the `scale_` lines apply at once, `memory` at the next start of the VM.
 
-App windows can be resized and maximized. `scale_apps` says what a new size does: `fit` scales the picture keeping its proportions, with black bars; `stretch` fills the window; `resize` gives the Android task the window's new size, as WSA does, so the app lays itself out again and the picture is pixel for pixel. The window of the whole display has `fit` and `stretch` only: the Android display keeps its size for now. App windows follow their task when Android moves it.
+App windows can be resized and maximized. `scale_apps` says what a new size does: `fit` scales the picture keeping its proportions, with black bars; `stretch` fills the window; `resize` gives the Android task the window's new size, as WSA does, so the app lays itself out again and the picture is pixel for pixel. App windows follow their task when Android moves it.
 
-The Android display is the size of the Windows work area in physical pixels, and its density follows the system scale (125 % → 200 dpi): a maximized app fills the work area pixel for pixel. The host passes the size to the guest on the kernel command line (`androidboot.wsa_display`), which needs the vendor image with the HWC from `device/microsoft/wsa_x86_64/headless-hwc`; an older HWC keeps 1280×800. The service cannot see the work area from session 0 and takes the size from `display.txt`, which the client writes when it starts. The window of the whole display is a mirror of the same display, scaled down; closing it hides it, and a click on the tray icon shows it again.
+The Android display is the size of the Windows work area in physical pixels, and its density follows the system scale (125 % → 200 dpi): a maximized app fills the work area pixel for pixel. The host passes the size to the guest on the kernel command line (`androidboot.wsa_display`), which needs the vendor image with the HWC from `device/microsoft/wsa_x86_64/headless-hwc`; an older HWC keeps 1280×800. The service cannot see the work area from session 0 and takes the size from `display.txt`, which the client writes when it starts. The window of the whole display is a mirror of the same display, scaled down; it is hidden at start unless `desktop_window show`, closing it hides it, and a click on the tray icon shows it again. With `scale_desktop resize` it is not a mirror: the Android display takes the size of this window (the HWC reconnects the display at the new size when the drag ends), Android lives in this one window as in an emulator, apps open fullscreen in it (the bridge switches the display's windowing mode), and there are no app windows — they map the Android display onto the work area one to one, so both cannot be had at once. Back to `fit` or `stretch`, the display returns to the work area and the app windows come back.
 
 ## 3. Install and run
 
@@ -176,6 +177,7 @@ The client listens on `127.0.0.1:58610` (Windows only) for one line per connecti
 | `sound [<0-100>]` | the volume of Android's sound (this output only, until the client restarts); prints frames, bytes played and dropped, and the microphone's reads and bytes |
 | `nclick`, `naction <button> [reply]`, `ndismiss` | act on the last notification |
 | `snap` | write `frame.bmp` and `task-<id>.bmp` (the display and each task window as the host shows them) now |
+| `display`, `dsize <w> <h>` | the window of the whole display: its size and state, the Android frame size and the size asked of Android; resize its client area |
 
 ## Development mode: the agent
 

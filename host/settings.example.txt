@@ -14,5 +14,8 @@ idle 10
 # scale_apps fit|stretch|resize — what an app window does when resized or maximized: fit keeps the proportions with bars
 #     (default), stretch fills the window, resize gives the Android task the window's new size (the app lays out again)
 # scale_apps resize
-# scale_desktop fit|stretch — the same for the window of the whole Android display (it cannot resize the display yet)
+# scale_desktop fit|stretch|resize — the same for the window of the whole Android display; resize makes the Android display
+# the size of that window: Android lives in this one window, apps fullscreen in it, no app windows (as an emulator)
 # scale_desktop fit
+# desktop_window show|hide — the window of the whole Android display at start: hidden by default, the tray icon shows it
+# desktop_window hide

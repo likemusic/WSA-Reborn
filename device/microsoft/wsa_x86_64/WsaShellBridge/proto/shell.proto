@@ -69,6 +69,9 @@ message UpdateAndroidDisplayInfo {
     optional int32 density = 2;          // → IWindowManager.setForcedDisplayDensityForUser
     optional Bounds stableBounds = 3;    // → IWsaSystemServer.updateDisplayBounds (a Microsoft service in system_server, we do not have it)
     optional Bounds maximizedBounds = 4;
+    // Ours, not Microsoft's (WsaClient never sends it): the display's windowing mode — 1 fullscreen when the own host
+    // shows Android in one window ("scale_desktop resize"), 5 freeform for a host window per task. 17.10.2026.
+    optional int32 windowingMode = 100;
   }
   repeated DisplayParameters displayParameters = 1;
 }

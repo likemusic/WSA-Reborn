@@ -408,6 +408,16 @@ public final class ShellBridge implements ApiChannel.Handler {
                     Slog.e(TAG, "setForcedDisplayDensity failed", e);
                 }
             }
+            if (p.hasWindowingMode()) {
+                // The own host shows Android in one window: apps fullscreen in it, as on a tablet;
+                // back to freeform when every task gets a host window again (17.10.2026).
+                try {
+                    mWm.setWindowingMode(displayId, p.getWindowingMode());
+                    Slog.i(TAG, "display " + displayId + " windowing mode " + p.getWindowingMode());
+                } catch (RemoteException e) {
+                    Slog.e(TAG, "setWindowingMode failed", e);
+                }
+            }
             if (p.hasStableBounds()) {
                 // At Microsoft this goes to IWsaSystemServer.updateDisplayBounds (their service inside
                 // system_server); here fitToHostWorkArea() applies the bounds to new tasks.
