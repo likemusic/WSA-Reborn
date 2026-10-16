@@ -1297,6 +1297,25 @@ struct GfxCommand { UINT32 ctx_id, cmd_size; BYTE* cmd; UINT32 num_in_fences; UI
 struct GfxBlob { UINT32 blob_mem, blob_flags; UINT64 blob_id, size; };
 struct GfxHandle { INT64 os_handle; UINT32 handle_type; };
 
+// In the proxied device host (--hdv-host) HdvCreateSectionBackedMmioRange answers E_ACCESSDENIED: the mapping goes, as
+// wsldevicehost.dll's virtio-fs DAX window does, through the service's support object (IPlan9FileSystemHost), which
+// asks the VM worker (IVmFiovGuestMmioMappings). 16.10.2026.
+static IPlan9FileSystemHost* g_hdvSupportFs = nullptr;
+
+static HRESULT HdvGpuMapSection(HDV_DEVICE dev, UINT64 barOffset, UINT64 size, HANDLE section, UINT64 sectionOffset)
+{
+    HRESULT hr = HdvCreateSectionBackedMmioRange(dev, HDV_PCI_BAR2, barOffset / 4096, (size + 4095) / 4096, HdvMmioMappingFlagWriteable, section, sectionOffset / 4096);
+    if (hr == E_ACCESSDENIED && g_hdvSupportFs)
+        hr = g_hdvSupportFs->CreateSectionBackedMmioRange(kHdvGpuInstance, HDV_PCI_BAR2, barOffset / 4096, (size + 4095) / 4096, HdvMmioMappingFlagWriteable, section, sectionOffset / 4096);
+    return hr;
+}
+
+static void HdvGpuUnmapSection(HDV_DEVICE dev, UINT64 barOffset)
+{
+    if (HdvDestroySectionBackedMmioRange(dev, HDV_PCI_BAR2, barOffset / 4096) == E_ACCESSDENIED && g_hdvSupportFs)
+        g_hdvSupportFs->DestroySectionBackedMmioRange(kHdvGpuInstance, HDV_PCI_BAR2, barOffset / 4096);
+}
+
 static void HdvGpuUnmapApertures(HdvGpu& d, UINT32 res)
 {
     auto it = d.apertures.find(res);
@@ -1384,7 +1403,7 @@ static bool HdvGpu3d(HdvGpu& d, UINT32 type, UINT32 ctx, const std::vector<BYTE>
         UINT32 res = u32(24);
         g_hdvGpuBlobSizes.erase(res);
         auto m = d.blobMaps.find(res);
-        if (m != d.blobMaps.end()) { HdvDestroySectionBackedMmioRange(d.handle, HDV_PCI_BAR2, m->second / 4096); d.blobMaps.erase(m); }
+        if (m != d.blobMaps.end()) { HdvGpuUnmapSection(d.handle, m->second); d.blobMaps.erase(m); }
         // Only unref, as crosvm: detach_iov on a host blob frees memory the renderer never allocated (CRT free of a
         // latte view, a crash in ntdll); unref detaches the guest pages itself.
         if (g_gfx.resource_unref) g_gfx.resource_unref(res);
@@ -1456,9 +1475,9 @@ static bool HdvGpu3d(HdvGpu& d, UINT32 type, UINT32 ctx, const std::vector<BYTE>
         UINT64 secOffset = 0;
         HANDLE sec = hva ? LatteSection(hva, &secOffset) : nullptr;
         if (sec && secOffset % 4096 == 0)
-            hr = HdvCreateSectionBackedMmioRange(d.handle, HDV_PCI_BAR2, offset / 4096, (size + 4095) / 4096, HdvMmioMappingFlagWriteable, sec, secOffset / 4096);
+            hr = HdvGpuMapSection(d.handle, offset, size, sec, secOffset);
         else if (r == 0 && h.os_handle != -1 && size)
-            hr = HdvCreateSectionBackedMmioRange(d.handle, HDV_PCI_BAR2, offset / 4096, (size + 4095) / 4096, HdvMmioMappingFlagWriteable, (HANDLE)(intptr_t)h.os_handle, 0);
+            hr = HdvGpuMapSection(d.handle, offset, size, (HANDLE)(intptr_t)h.os_handle, 0);
         static int logged = 0;
         if (logged++ < 20 || FAILED(hr))
             std::printf("hdv gpu: map blob %u at BAR2+0x%llx: export %d (handle 0x%llx type %u), map %p size %llu, info 0x%x, section: 0x%08lx\n", res, offset, r, h.os_handle, h.handle_type, hva, size, info, hr);
@@ -1474,7 +1493,7 @@ static bool HdvGpu3d(HdvGpu& d, UINT32 type, UINT32 ctx, const std::vector<BYTE>
     case 0x0209:  // RESOURCE_UNMAP_BLOB {resource_id}
     {
         auto m = d.blobMaps.find(u32(24));
-        if (m != d.blobMaps.end()) { HdvDestroySectionBackedMmioRange(d.handle, HDV_PCI_BAR2, m->second / 4096); d.blobMaps.erase(m); }
+        if (m != d.blobMaps.end()) { HdvGpuUnmapSection(d.handle, m->second); d.blobMaps.erase(m); }
         if (g_gfx.resource_unmap) g_gfx.resource_unmap(u32(24));
         break;
     }
@@ -1823,6 +1842,7 @@ static HRESULT ClientHdvHost(const std::wstring& objref)
     if (st) st->Release();
     std::printf("client: hdv support %ls (%zu bytes): 0x%08lx\n", objref.c_str(), b.size(), hr);
     if (FAILED(hr)) return hr;
+    support->QueryInterface(__uuidof(IPlan9FileSystemHost), (void**)&g_hdvSupportFs);
     // (const GUID* vm, IUnknown* support, HDV_HOST*): as wsldevicehost.dll calls it — with the VM's id, the key of its
     // cache of hosts (a null first argument never returned).
     using Fn = HRESULT(WINAPI*)(const GUID*, IUnknown*, HDV_HOST*);
@@ -1957,6 +1977,10 @@ static void HdvAdd()
         const GUID* cls = kind == "test" ? &kHdvTestClass : &kHdvGpuClass;
         const GUID* inst = kind == "test" ? &kHdvTestInstance : &kHdvGpuInstance;
         if (!g_hdvInClient && !(kind == "test" ? g_hdvTest.handle : g_hdvGpu.handle)) continue;
+        if (g_hdvInClient) g_deviceHost.Known(*inst);  // the proxied host maps its blobs through the support object
+        // A proxied device host (--hdv-host) gets guest memory only as "ExternalRestricted", as wsldevicehost.dll's
+        // virtio-fs: with "External" HdvReadGuestMemory answers 0x80070005 and apertures 0x80070006 (16.10.2026).
+        if (g_hdvInClient && model == "External") model = "ExternalRestricted";
         std::string req = "{\"ResourcePath\":\"VirtualMachine/Devices/FlexibleIov/" + GuidStr(*inst).substr(1, 36) +
                           "\",\"RequestType\":\"Add\",\"Settings\":{\"EmulatorId\":\"" + GuidStr(*cls).substr(1, 36) + "\",\"HostingModel\":\"" + model + "\"}}";
         HCS_OPERATION op = HcsCreateOperation(nullptr, nullptr);
