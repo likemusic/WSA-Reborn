@@ -94,9 +94,13 @@ idle 10                 # minutes without an app window before "asneeded" stops 
 memory default          # GB, or default: 6 GB from 12 GB of RAM, 4 from 8, 3 above 4, else 2
 clipboard on            # shared clipboard with Windows; off when the line is missing
 microphone on           # Android's recording from Windows' default microphone; off (silence) when the line is missing
+scale_apps resize       # an app window resized or maximized: fit (default) | stretch | resize — see below
+scale_desktop fit       # the window of the whole Android display: fit (default) | stretch
 ```
 
-The client re-reads the file every 5 seconds; `lifecycle`, `idle`, `clipboard` and `microphone` apply at once, `memory` at the next start of the VM.
+The client re-reads the file every 5 seconds; `lifecycle`, `idle`, `clipboard`, `microphone` and the `scale_` lines apply at once, `memory` at the next start of the VM.
+
+App windows can be resized and maximized. `scale_apps` says what a new size does: `fit` scales the picture keeping its proportions, with black bars; `stretch` fills the window; `resize` gives the Android task the window's new size, as WSA does, so the app lays itself out again and the picture is pixel for pixel. The window of the whole display has `fit` and `stretch` only: the Android display keeps its size for now. App windows follow their task when Android moves it.
 
 ## 3. Install and run
 
@@ -115,7 +119,7 @@ Then, as the normal user:
 | `wsa-reborn-host.exe --client` | starts the desktop half; with the VM off it starts the service, as `WsaClient` asks `WsaService` |
 | `wsa-reborn-host.exe --launch <package>` | starts an app; with the VM off starts the client (and the VM) first and waits for it |
 | `wsa-reborn-host.exe --lifecycle continuous\|asneeded\|partial` | writes the mode into `settings.txt`; `continuous` and `partial` also start the client at sign-in (a `Run` value of the user), as WSA's startup tasks do |
-| `wsa-reborn-host.exe --settings` | the settings window: resources mode, idle time, memory, clipboard, microphone, the subsystem's state and "Turn off" — it writes `settings.txt` and the start at sign-in, like `--lifecycle` |
+| `wsa-reborn-host.exe --settings` | the settings window: resources mode, idle time, memory, clipboard, microphone, how windows scale, the subsystem's state and "Turn off" — it writes `settings.txt` and the start at sign-in, like `--lifecycle` |
 | `wsa-reborn-host.exe --stop` | stops the service and the VM |
 | `wsa-reborn-host.exe --uninstall` | (administrator) stops and removes the service and the Program Files copy |
 
@@ -163,6 +167,7 @@ The client listens on `127.0.0.1:58610` (Windows only) for one line per connecti
 | --- | --- |
 | `tasks` | the task windows: id, size, position |
 | `tclose <task>`, `tmin <task>`, `trestore <task>`, `tmove <task> <x> <y>` | close, minimize, restore, move a task's window |
+| `tsize <task> <w> <h>`, `tmax <task>` | resize a task window's client area, maximize it (takes the focus) |
 | `tclick <task> <x> <y>`, `tkey <task> <vk>` | a click or a key into a task's window |
 | `apps`, `launch <package>`, `uninstall <package>` | the app list, start, uninstall |
 | `clip on\|off` | the clipboard, until the `clipboard` line of `settings.txt` changes |

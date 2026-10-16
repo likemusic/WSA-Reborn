@@ -11,3 +11,8 @@ idle 10
 # clipboard on
 # microphone on|off — Android's recording from the default microphone of Windows (off by default: Android records silence)
 # microphone on
+# scale_apps fit|stretch|resize — what an app window does when resized or maximized: fit keeps the proportions with bars
+#     (default), stretch fills the window, resize gives the Android task the window's new size (the app lays out again)
+# scale_apps resize
+# scale_desktop fit|stretch — the same for the window of the whole Android display (it cannot resize the display yet)
+# scale_desktop fit
