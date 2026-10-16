@@ -70,6 +70,7 @@
 #include <winrt/Windows.UI.Notifications.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <deque>
 #include <cstdio>
 #include <fstream>
@@ -584,11 +585,14 @@ static void ReadSharesSettings()
 //       3 above 4, else 2. Without the line the "SizeInMB" of config.json stays. Read by the VM half.
 //   clipboard on|off — the shared clipboard with Windows (WSA has it always on); off by default, and "clip on|off" on
 //       the command port overrides it until the line changes. Read by the client.
+//   microphone on|off — Android's recording from the default microphone of Windows; off by default (the owner's
+//       microphone; WSA asks through the Windows privacy settings), then Android records silence. Read by the client.
 enum { kContinuous = 0, kAsNeeded = 1, kPartial = 2 };  // WSA's VMLifeCycleMode values
 static const char* const kLifecycleNames[] = {"continuous", "asneeded", "partial"};
 static int g_lifecycle = kAsNeeded, g_memoryMb = 0;
 static double g_idleMinutes = 10;
 static int g_clipSetting = -1;  // settings.txt "clipboard": -1 no line, 0 off, 1 on
+static std::atomic<int> g_micSetting{-1};  // settings.txt "microphone", the same
 
 static void ReadSettings()
 {
@@ -597,6 +601,7 @@ static void ReadSettings()
     const unsigned long long gb = 1ull << 30, ram = ms.ullTotalPhys;
     g_lifecycle = ram < 16 * gb ? kAsNeeded : kPartial;
     g_clipSetting = -1;
+    int mic = -1;
     std::ifstream f(UserFile(L"settings.txt"));
     for (std::string line; std::getline(f, line);)
     {
@@ -608,11 +613,13 @@ static void ReadSettings()
             for (int i = 0; i < 3; i++)
                 if (value == kLifecycleNames[i]) g_lifecycle = i;
         if (key == "clipboard") g_clipSetting = value == "on";
+        if (key == "microphone") mic = value == "on";
         if (key == "idle") g_idleMinutes = (std::max)(0.05, std::atof(value.c_str()));
         if (key == "memory")
             g_memoryMb = value == "default" ? (ram >= 12 * gb ? 6144 : ram >= 8 * gb ? 4096 : ram > 4 * gb ? 3072 : 2048)
                                             : (std::clamp)(std::atoi(value.c_str()), 1, 128) * 1024;
     }
+    g_micSetting = mic;
 }
 // The virtio device host under a LocalSystem service: HdvProxyDeviceHost answered E_ACCESSDENIED (15.10.2026) for the
 // device host loaded into the service process, while WSL's LocalSystem service gets it working with the device host in
@@ -924,7 +931,8 @@ static std::string CompositionAnswer(unsigned long long type)
 // AudioControl frames carry a bare LatteApi.AudioControl.AudioControlMessage (no ApiMessageHeader): the guest's audio HAL
 // asks {message_type=Request, request_id, request{control_code, arg}} and waits for {Response, request_id,
 // response{control_code, error_code, result}} — without an answer audioserver dies and system_server's watchdog fires
-// (12.10.2026). Answers: 48 kHz, stereo, PCM 16 bit; AudioOut is played (SoundFrame), AudioIn stays silent.
+// (12.10.2026). Answers: 48 kHz, stereo, PCM 16 bit (input: mono); AudioOut is played (SoundFrame), AudioIn answered
+// by MicChannel.
 static std::string AudioControlAnswer(const std::string& body)
 {
     std::map<int, unsigned long long> m, rq;
@@ -1025,6 +1033,124 @@ static void SoundFrame(const std::string& body)
         return;
     }
     g_waveQueue.push_back(h);
+}
+
+// AudioIn (ArtAudio::AudioChannel::readAudio): the guest asks {u32 1, u32 1, u32 bytes, u32 sequence} and waits the
+// buffer's duration + 50 ms for the same 16 bytes with the length at +8, followed by the PCM (48 kHz, mono, 16 bit, as
+// AudioControlAnswer told it); past that it records zeros, and a late answer would go to the next read (one that comes
+// with no read waiting is dropped). "microphone on" in settings.txt captures the default recording device with waveIn
+// while the guest reads and closes it after a second without reads, so Windows shows the microphone in use only then;
+// otherwise the answer is silence, paced in real time (with no answer at all 3 s of recording took the guest 24 s).
+// 16.10.2026.
+static std::atomic<unsigned long long> g_micReads{0}, g_micBytes{0}, g_micCaptured{0};
+static const unsigned kMicBytesPerSecond = kSoundRate * 2, kMicChunk = kMicBytesPerSecond / 50;  // 20 ms
+
+struct MicCapture
+{
+    HWAVEIN in = nullptr;
+    std::vector<WAVEHDR> hdrs;
+    std::vector<std::vector<char>> bufs;
+    std::string ring;
+    size_t next = 0;  // the header to harvest next: waveIn fills them in order
+
+    bool Open()
+    {
+        WAVEFORMATEX f{WAVE_FORMAT_PCM, 1, kSoundRate, kMicBytesPerSecond, 2, 16, 0};
+        MMRESULT r = waveInOpen(&in, WAVE_MAPPER, &f, 0, 0, CALLBACK_NULL);
+        if (r != MMSYSERR_NOERROR) { in = nullptr; RcmLog("channel AudioIn: waveInOpen failed " + std::to_string(r)); return false; }
+        hdrs.assign(10, WAVEHDR{});
+        bufs.assign(10, std::vector<char>(kMicChunk));
+        for (size_t i = 0; i < hdrs.size(); i++)
+        {
+            hdrs[i].lpData = bufs[i].data();
+            hdrs[i].dwBufferLength = kMicChunk;
+            waveInPrepareHeader(in, &hdrs[i], sizeof hdrs[i]);
+            waveInAddBuffer(in, &hdrs[i], sizeof hdrs[i]);
+        }
+        next = 0;
+        ring.clear();
+        waveInStart(in);
+        RcmLog("channel AudioIn: recording from the default microphone");
+        return true;
+    }
+    void Harvest()
+    {
+        while (in && (hdrs[next].dwFlags & WHDR_DONE))
+        {
+            WAVEHDR& h = hdrs[next];
+            ring.append(h.lpData, h.dwBytesRecorded);
+            g_micCaptured += h.dwBytesRecorded;
+            h.dwFlags &= ~WHDR_DONE;
+            h.dwBytesRecorded = 0;
+            waveInAddBuffer(in, &h, sizeof h);
+            next = (next + 1) % hdrs.size();
+        }
+        if (ring.size() > kMicBytesPerSecond / 5) ring.erase(0, ring.size() - kMicBytesPerSecond / 5);  // at most 200 ms behind
+    }
+    void Close()
+    {
+        if (!in) return;
+        waveInReset(in);
+        for (WAVEHDR& h : hdrs) waveInUnprepareHeader(in, &h, sizeof h);
+        waveInClose(in);
+        in = nullptr;
+        RcmLog("channel AudioIn: microphone closed");
+    }
+};
+
+static void MicChannel(SOCKET h)
+{
+    MicCapture mic;
+    auto due = std::chrono::steady_clock::now(), retry = due;  // retry: when to try a failed waveInOpen again
+    char tmp[4096];
+    std::string buf;
+    for (;;)
+    {
+        // A second without reads: the guest stopped recording. Not SO_RCVTIMEO — its timeout aborts an hvsocket (10053).
+        fd_set r;
+        FD_ZERO(&r);
+        FD_SET(h, &r);
+        timeval second{1, 0};
+        int ready = select(0, &r, nullptr, nullptr, &second);
+        if (ready == 0) { mic.Close(); continue; }
+        int n = ready > 0 ? recv(h, tmp, sizeof tmp, 0) : -1;
+        if (n <= 0) break;
+        buf.append(tmp, n);
+        while (buf.size() >= 4)
+        {
+            unsigned len = *(unsigned*)buf.data();
+            if (buf.size() < 4ull + len) break;
+            std::string req = buf.substr(4, len);
+            buf.erase(0, 4ull + len);
+            if (req.size() != 16) { RcmLog("channel AudioIn: unexpected frame " + Hex(req.data(), req.size(), 32)); continue; }
+            const size_t bytes = (std::min)(*(const unsigned*)(req.data() + 8), kMicBytesPerSecond) & ~1u;
+            if (++g_micReads <= 3) RcmLog("channel AudioIn: RECV " + Hex(req.data(), req.size()));
+            const auto now = std::chrono::steady_clock::now();
+            const auto span = std::chrono::microseconds(bytes * 1000000ull / kMicBytesPerSecond);
+            std::string pcm;
+            if (g_micSetting == 1 && !mic.in && now >= retry && !mic.Open()) retry = now + std::chrono::seconds(5);
+            if (g_micSetting == 1 && mic.in)
+            {
+                // Wait for the device's data, but answer in time: the guest gives up after the duration + 50 ms.
+                for (auto end = now + span + std::chrono::milliseconds(30); (mic.Harvest(), mic.ring.size() < bytes) && std::chrono::steady_clock::now() < end;) Sleep(5);
+                pcm = mic.ring.substr(0, bytes);
+                mic.ring.erase(0, pcm.size());
+                pcm.resize(bytes);  // a short device answers the rest as silence
+            }
+            else
+            {
+                mic.Close();
+                if (due < now - std::chrono::milliseconds(100)) due = now;  // a new recording, not catching up
+                due += span;
+                std::this_thread::sleep_until(due);
+                pcm.assign(bytes, '\0');
+            }
+            *(unsigned*)&req[8] = (unsigned)pcm.size();
+            g_micBytes += pcm.size();
+            SendFrame(h, req + pcm);
+        }
+    }
+    mic.Close();
 }
 
 // SettingsMessage{message_type=NetworkConfiguration (18), activity_id, network_configuration{is_connected=true,
@@ -2367,7 +2493,8 @@ static void RcmChannel(std::string name, unsigned port)
     char tmp[65536];
     std::string buf;
     unsigned long frames = 0;
-    for (int n; (n = recv(h, tmp, sizeof tmp, 0)) > 0;)
+    if (name == "AudioIn") MicChannel(h);
+    else for (int n; (n = recv(h, tmp, sizeof tmp, 0)) > 0;)
     {
         buf.append(tmp, n);
         while (buf.size() >= 4)
@@ -2384,7 +2511,6 @@ static void RcmChannel(std::string name, unsigned port)
                 continue;
             }
             if (name == "AudioOut") { if (++frames <= 3) RcmLog("channel AudioOut: RECV " + Hex(body.data(), body.size(), 32) + " (" + std::to_string(body.size()) + " bytes)"); SoundFrame(body); continue; }
-            if (name == "AudioIn") continue;
             std::map<int, unsigned long long> hdr, msg;
             auto parts = PbFields(body, &hdr);
             PbFields(parts[4], &msg);
@@ -2997,6 +3123,7 @@ static void FrameListen()
 //   tkey <task> <vk>       key press into the task's window
 //   clip on|off            clipboard exchange with the guest (off by default: the owner's clipboard)
 //   sound [<0-100>]        the volume of the guest's sound (this client's output only); without it — the counters
+//                          (with the microphone's: reads, bytes answered, bytes captured)
 //   uris on|off            open the guest's links in Windows (default) or only log them
 //   clipput text|html|png|file <path>  send a file's content to the guest as a Windows copy would (no clipboard touched)
 //   files open|off         open files the guest sends with launch=true (off by default: only downloads\ + a log line)
@@ -3053,7 +3180,7 @@ static void InputControl(unsigned short port)
                     if (g_waveOut) waveOutSetVolume(g_waveOut, g_waveVolume);
                 }
                 char a[200];
-                std::snprintf(a, sizeof a, "ok sound volume %u frames %llu bytes %llu played %llu dropped %llu\n", (unsigned)((g_waveVolume & 0xffff) * 100 / 0xffff), g_soundFrames, g_soundBytes, SoundPlayedLocked(), g_soundDropped);
+                std::snprintf(a, sizeof a, "ok sound volume %u frames %llu bytes %llu played %llu dropped %llu; mic reads %llu bytes %llu captured %llu\n", (unsigned)((g_waveVolume & 0xffff) * 100 / 0xffff), g_soundFrames, g_soundBytes, SoundPlayedLocked(), g_soundDropped, g_micReads.load(), g_micBytes.load(), g_micCaptured.load());
                 answer = a;
                 send(c, answer.data(), (int)answer.size(), 0);
                 continue;
@@ -3819,12 +3946,12 @@ static int SetLifecycle(const wchar_t* mode)
 }
 
 // "--settings": the settings window, as WSA's "Advanced settings" → "Memory and performance" (the owner's wish of
-// 15.10.2026): the resources mode, the idle time, the memory, the shared clipboard, the subsystem's state with "Turn
+// 15.10.2026): the resources mode, the idle time, the memory, the shared clipboard and the microphone, the subsystem's state with "Turn
 // off". It edits settings.txt next to the exe through WriteSettings — what the client re-reads every 5 seconds — and the
 // start at sign-in as --lifecycle does. "--settings-test <lifecycle> <idle> <memory> <clipboard>" runs the same window
 // hidden, prints what it loaded, sets the controls, presses Save and prints the file: a check without a window on the
 // desktop. 16.10.2026.
-enum { kIdRadio = 100, kIdIdle = 110, kIdMemory = 111, kIdClip = 112, kIdState = 113, kIdTurnOff = 114, kIdSave = IDOK, kIdClose = IDCANCEL };
+enum { kIdRadio = 100, kIdIdle = 110, kIdMemory = 111, kIdClip = 112, kIdState = 113, kIdTurnOff = 114, kIdMic = 115, kIdSave = IDOK, kIdClose = IDCANCEL };
 static const wchar_t* const kLifecycleLabels[] = {
     L"Continuous — the subsystem runs from sign-in and is always ready",
     L"As needed — starts with an app, turns off when no app is open",
@@ -3880,6 +4007,7 @@ static void SettingsLoad(HWND w)
     }
     ComboBox_SetCurSel(GetDlgItem(w, kIdMemory), sel);
     Button_SetCheck(GetDlgItem(w, kIdClip), g_clipSetting == 1 ? BST_CHECKED : BST_UNCHECKED);
+    Button_SetCheck(GetDlgItem(w, kIdMic), g_micSetting == 1 ? BST_CHECKED : BST_UNCHECKED);
 }
 
 static bool SettingsSave(HWND w)
@@ -3896,7 +4024,8 @@ static bool SettingsSave(HWND w)
     int sel = ComboBox_GetCurSel(GetDlgItem(w, kIdMemory));
     std::string memory = sel <= 0 ? "" : sel == 1 ? "default" : std::to_string(kMemoryGb[sel - 2]);
     bool ok = WriteSettings({{"lifecycle", kLifecycleNames[m]}, {"idle", idleText}, {"memory", memory},
-                             {"clipboard", Button_GetCheck(GetDlgItem(w, kIdClip)) == BST_CHECKED ? "on" : "off"}});
+                             {"clipboard", Button_GetCheck(GetDlgItem(w, kIdClip)) == BST_CHECKED ? "on" : "off"},
+                             {"microphone", Button_GetCheck(GetDlgItem(w, kIdMic)) == BST_CHECKED ? "on" : "off"}});
     LSTATUS rc = SetSignInStart(m != kAsNeeded);
     std::printf("settings: settings.txt %s, start at sign-in %s: %s\n", ok ? "written" : "NOT written", m == kAsNeeded ? "removed" : "set", rc ? "FAILED" : "ok");
     if (!ok || rc) SettingsMessage(w, ok ? L"Cannot set the start at sign-in." : L"Cannot write settings.txt.", MB_ICONERROR);
@@ -3946,7 +4075,7 @@ static HWND SettingsCreate(bool visible)
     wc.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
     wc.lpszClassName = L"WsaRebornHostSettings";
     RegisterClassW(&wc);
-    RECT r{0, 0, px(520), px(370)};
+    RECT r{0, 0, px(520), px(398)};
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRectExForDpi(&r, style, FALSE, 0, dpi);
     HWND w = CreateWindowExW(0, wc.lpszClassName, L"WSA-Reborn host — settings", style, CW_USEDEFAULT, CW_USEDEFAULT,
@@ -3970,11 +4099,12 @@ static HWND SettingsCreate(bool visible)
     SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)text);
     for (int gb : kMemoryGb) swprintf_s(text, L"%d GB", gb), SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)text);
     add(L"BUTTON", L"Shared clipboard with Windows", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 206, 496, 24, kIdClip);
-    add(L"STATIC", L"", SS_LEFT, 12, 252, 340, 20, kIdState);
-    add(L"BUTTON", L"Turn off", BS_PUSHBUTTON | WS_TABSTOP, 360, 246, 148, 30, kIdTurnOff);
-    add(L"STATIC", L"Saved settings apply to a running client within seconds.", SS_LEFT, 12, 296, 496, 20, -1);
-    add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON | WS_TABSTOP, 252, 328, 124, 30, kIdSave);
-    add(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, 384, 328, 124, 30, kIdClose);
+    add(L"BUTTON", L"Microphone for Android apps", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 234, 496, 24, kIdMic);
+    add(L"STATIC", L"", SS_LEFT, 12, 280, 340, 20, kIdState);
+    add(L"BUTTON", L"Turn off", BS_PUSHBUTTON | WS_TABSTOP, 360, 274, 148, 30, kIdTurnOff);
+    add(L"STATIC", L"Saved settings apply to a running client within seconds.", SS_LEFT, 12, 324, 496, 20, -1);
+    add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON | WS_TABSTOP, 252, 356, 124, 30, kIdSave);
+    add(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, 384, 356, 124, 30, kIdClose);
     SettingsLoad(w);
     SettingsState(w);
     SetTimer(w, 1, 2000, nullptr);
@@ -3996,7 +4126,7 @@ static int SettingsWindow()
 
 static int SettingsTest(int argc, wchar_t** argv)
 {
-    if (argc < 6) { std::printf("--settings-test <lifecycle> <idle> <memory: config|default|GB> <clipboard on|off>\n"); return 2; }
+    if (argc < 6) { std::printf("--settings-test <lifecycle> <idle> <memory: config|default|GB> <clipboard on|off> [<microphone on|off>]\n"); return 2; }
     g_settingsTest = true;
     HWND w = SettingsCreate(false);
     auto show = [&](const char* when) {
@@ -4008,8 +4138,8 @@ static int SettingsTest(int argc, wchar_t** argv)
         HWND combo = GetDlgItem(w, kIdMemory);
         SendMessageW(combo, CB_GETLBTEXT, ComboBox_GetCurSel(combo), (LPARAM)mem);
         GetDlgItemTextW(w, kIdState, state, 128);
-        std::printf("%s: lifecycle %s, idle %ls, memory %ls, clipboard %s; %ls (Turn off %s)\n", when, m < 0 ? "-" : kLifecycleNames[m], idle, mem,
-                    Button_GetCheck(GetDlgItem(w, kIdClip)) == BST_CHECKED ? "on" : "off", state,
+        std::printf("%s: lifecycle %s, idle %ls, memory %ls, clipboard %s, microphone %s; %ls (Turn off %s)\n", when, m < 0 ? "-" : kLifecycleNames[m], idle, mem,
+                    Button_GetCheck(GetDlgItem(w, kIdClip)) == BST_CHECKED ? "on" : "off", Button_GetCheck(GetDlgItem(w, kIdMic)) == BST_CHECKED ? "on" : "off", state,
                     IsWindowEnabled(GetDlgItem(w, kIdTurnOff)) ? "enabled" : "disabled");
     };
     show("loaded");
@@ -4021,6 +4151,7 @@ static int SettingsTest(int argc, wchar_t** argv)
         if (std::atoi(memory.c_str()) == kMemoryGb[i]) sel = 2 + i;
     ComboBox_SetCurSel(GetDlgItem(w, kIdMemory), sel);
     Button_SetCheck(GetDlgItem(w, kIdClip), !wcscmp(argv[5], L"on") ? BST_CHECKED : BST_UNCHECKED);
+    if (argc > 6) Button_SetCheck(GetDlgItem(w, kIdMic), !wcscmp(argv[6], L"on") ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(w, WM_COMMAND, MAKEWPARAM(kIdSave, BN_CLICKED), 0);
     show("saved");
     std::ifstream f(ExeDir() + L"\\settings.txt");

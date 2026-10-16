@@ -9,3 +9,5 @@ idle 10
 # memory default
 # clipboard on|off — the shared clipboard with Windows (off by default; the command port's "clip on|off" overrides it)
 # clipboard on
+# microphone on|off — Android's recording from the default microphone of Windows (off by default: Android records silence)
+# microphone on

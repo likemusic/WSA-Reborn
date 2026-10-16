@@ -8,7 +8,7 @@ Everything else in WSA-Reborn keeps Microsoft's host: `WsaService.exe` starts th
 
 **Status: experimental.** It boots Android 16 to the home screen and runs apps in their own windows, alongside a running stock WSA. Rendering is in software: the guest has no GPU (SwiftShader + ANGLE inside Android, frames sent to the host over vsock), so it is fine for ordinary apps and automated tests and slow for games and video. Tested with an Android 16 system image (`aosp16`) on Windows 11 x64.
 
-Not done yet: hardware graphics (virtio-gpu), registering `wsa://` and Start-menu entries (shortcuts are made in the host folder instead), and the microphone (Android's sound plays on Windows' default device).
+Not done yet: hardware graphics (virtio-gpu), registering `wsa://` and Start-menu entries (shortcuts are made in the host folder instead). Android's sound plays on Windows' default output device; the microphone is used only when `settings.txt` says so.
 
 ## How it fits together
 
@@ -93,9 +93,10 @@ lifecycle asneeded      # continuous | asneeded | partial — as WSA's "Memory a
 idle 10                 # minutes without an app window before "asneeded" stops the VM and "partial" restarts it
 memory default          # GB, or default: 6 GB from 12 GB of RAM, 4 from 8, 3 above 4, else 2
 clipboard on            # shared clipboard with Windows; off when the line is missing
+microphone on           # Android's recording from Windows' default microphone; off (silence) when the line is missing
 ```
 
-The client re-reads the file every 5 seconds; `lifecycle`, `idle` and `clipboard` apply at once, `memory` at the next start of the VM.
+The client re-reads the file every 5 seconds; `lifecycle`, `idle`, `clipboard` and `microphone` apply at once, `memory` at the next start of the VM.
 
 ## 3. Install and run
 
@@ -114,7 +115,7 @@ Then, as the normal user:
 | `wsa-reborn-host.exe --client` | starts the desktop half; with the VM off it starts the service, as `WsaClient` asks `WsaService` |
 | `wsa-reborn-host.exe --launch <package>` | starts an app; with the VM off starts the client (and the VM) first and waits for it |
 | `wsa-reborn-host.exe --lifecycle continuous\|asneeded\|partial` | writes the mode into `settings.txt`; `continuous` and `partial` also start the client at sign-in (a `Run` value of the user), as WSA's startup tasks do |
-| `wsa-reborn-host.exe --settings` | the settings window: resources mode, idle time, memory, clipboard, the subsystem's state and "Turn off" — it writes `settings.txt` and the start at sign-in, like `--lifecycle` |
+| `wsa-reborn-host.exe --settings` | the settings window: resources mode, idle time, memory, clipboard, microphone, the subsystem's state and "Turn off" — it writes `settings.txt` and the start at sign-in, like `--lifecycle` |
 | `wsa-reborn-host.exe --stop` | stops the service and the VM |
 | `wsa-reborn-host.exe --uninstall` | (administrator) stops and removes the service and the Program Files copy |
 
@@ -131,7 +132,7 @@ The client listens on `127.0.0.1:58610` (Windows only) for one line per connecti
 | `tclick <task> <x> <y>`, `tkey <task> <vk>` | a click or a key into a task's window |
 | `apps`, `launch <package>`, `uninstall <package>` | the app list, start, uninstall |
 | `clip on\|off` | the clipboard, until the `clipboard` line of `settings.txt` changes |
-| `sound [<0-100>]` | the volume of Android's sound (this output only, until the client restarts); prints frames, bytes played and dropped |
+| `sound [<0-100>]` | the volume of Android's sound (this output only, until the client restarts); prints frames, bytes played and dropped, and the microphone's reads and bytes |
 | `nclick`, `naction <button> [reply]`, `ndismiss` | act on the last notification |
 
 ## Development mode: the agent

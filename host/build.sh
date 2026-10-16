@@ -4,7 +4,10 @@
 # Windows path of the directory. 12.10.2026.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-out=$(wslpath "$(powershell.exe -NoProfile -Command '[IO.Path]::GetTempPath()' | tr -d '\r')")/${1:-wsa-reborn-host}
+# A failed WSL interop call prints nothing, and the build would land in the current directory: stop instead.
+tmp=$(powershell.exe -NoProfile -Command '[IO.Path]::GetTempPath()' | tr -d '\r')
+[ -n "$tmp" ] || { echo "no Windows temp path (WSL interop failed?) — run again" >&2; exit 1; }
+out=$(wslpath "$tmp")/${1:-wsa-reborn-host}
 mkdir -p "$out"
 cp "$here/wsa-reborn-host.cpp" "$out/"
 vs=$(ls -d "/mnt/c/Program Files/Microsoft Visual Studio/2022/"*/VC/Auxiliary/Build | head -1)
