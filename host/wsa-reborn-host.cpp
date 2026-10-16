@@ -961,9 +961,23 @@ static LONG WINAPI GfxstreamCrash(EXCEPTION_POINTERS* e)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+static std::string g_hdvGpuVkIcd;               // "vkicd=<name|manifest.json>": the renderer's Vulkan driver, see GfxstreamInit
+
 static int GfxstreamInit(UINT64 flags)
 {
     SetUnhandledExceptionFilter(GfxstreamCrash);
+    if (!g_hdvGpuVkIcd.empty())
+    {
+        // A .json is an ICD manifest for the Vulkan loader itself (VK_ICD_FILENAMES / VK_DRIVER_FILES), anything else
+        // the emulator's ANDROID_EMU_VK_ICD. Both the process environment and the CRT's copy: the renderer may read either.
+        bool json = g_hdvGpuVkIcd.size() > 5 && g_hdvGpuVkIcd.compare(g_hdvGpuVkIcd.size() - 5, 5, ".json") == 0;
+        for (const char* name : json ? std::vector<const char*>{"VK_ICD_FILENAMES", "VK_DRIVER_FILES"} : std::vector<const char*>{"ANDROID_EMU_VK_ICD"})
+        {
+            SetEnvironmentVariableA(name, g_hdvGpuVkIcd.c_str());
+            _putenv_s(name, g_hdvGpuVkIcd.c_str());
+            std::printf("gfxstream: %s=%s\n", name, g_hdvGpuVkIcd.c_str());
+        }
+    }
     static LatteOps ops = {LatteAlloc, LatteFree, LatteOpen};
     auto setLatte = (void (*)(LatteOps*))GetProcAddress(g_gfx.dll, "gfxstream_set_latte_operations");
     if (setLatte) setLatte(&ops);
@@ -1697,6 +1711,7 @@ static void HdvInit()
                 if (o == "shmtest") g_hdvGpuShmTest = true;
                 if (o == "nofences") g_hdvGpuFences = false;
                 if (o == "noctxinit") g_hdvGpuCtxInit = false;
+                if (o.rfind("vkicd=", 0) == 0) g_hdvGpuVkIcd = o.substr(6);
                 if (o.rfind("gfxstream=", 0) == 0) g_hdvGpuGfxDir = Widen(o.substr(10));
                 if (o.rfind("flags=", 0) == 0) g_hdvGpuGfxFlags = std::stoull(o.substr(6), nullptr, 16);
                 if (o.rfind("vendor=", 0) == 0) g_hdvGpuVendor = std::stoul(o.substr(7), nullptr, 16);
