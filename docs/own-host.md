@@ -118,7 +118,7 @@ Then, as the normal user:
 | `wsa-reborn-host.exe --stop` | stops the service and the VM |
 | `wsa-reborn-host.exe --uninstall` | (administrator) stops and removes the service and the Program Files copy |
 
-A launchable app gets a shortcut with its icon in `C:\WSA-Host\apps\` (it runs `--launch <package>`); pin the ones you use to Start or the taskbar. `adb connect 127.0.0.1:58600` works from Windows; from WSL run `host/adb-wsl-tunnel.sh` and use `adb connect 127.0.0.1:58601` (WSL in NAT mode cannot reach Windows' loopback).
+A launchable app gets a shortcut with its icon in `C:\WSA-Host\apps\` (it runs `--launch <package>`), and the client puts `Subsystem settings` there too (it runs `--settings`); pin the ones you use to Start or the taskbar. `adb connect 127.0.0.1:58600` works from Windows; from WSL run `host/adb-wsl-tunnel.sh` and use `adb connect 127.0.0.1:58601` (WSL in NAT mode cannot reach Windows' loopback).
 
 ## Command port
 

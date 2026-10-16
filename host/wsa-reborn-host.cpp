@@ -1315,6 +1315,26 @@ static std::wstring FullPath(const std::wstring& rel)
     return GetFullPathNameW(rel.c_str(), MAX_PATH, full, nullptr) ? std::wstring(full) : rel;
 }
 
+// A shortcut to this exe with the given arguments; icon empty — the exe's own.
+static void SaveShortcut(const std::wstring& lnk, const std::wstring& args, const std::wstring& description, const std::wstring& icon, int iconIndex)
+{
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    IShellLinkW* link = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link)))) { std::printf("apps: cannot create a shortcut\n"); return; }
+    link->SetPath(exe);
+    link->SetArguments(args.c_str());
+    link->SetDescription(description.c_str());
+    if (!icon.empty()) link->SetIconLocation(icon.c_str(), iconIndex);
+    IPersistFile* file = nullptr;
+    if (SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&file))))
+    {
+        if (FAILED(file->Save(lnk.c_str(), TRUE))) std::printf("apps: cannot save %ls\n", lnk.c_str());
+        file->Release();
+    }
+    link->Release();
+}
+
 static void AppShortcut(const std::string& package, const std::string& label, const std::string& png, bool add)
 {
     const std::wstring base = FullPath(L"apps\\" + Widen(package)), ico = base + L".ico", lnk = base + L".lnk";
@@ -1334,21 +1354,19 @@ static void AppShortcut(const std::string& package, const std::string& label, co
         f += png;
         std::ofstream(ico, std::ios::binary).write(f.data(), (std::streamsize)f.size());
     }
-    wchar_t exe[MAX_PATH];
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    IShellLinkW* link = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link)))) { std::printf("apps: cannot create a shortcut\n"); return; }
-    link->SetPath(exe);
-    link->SetArguments((L"--launch " + Widen(package)).c_str());
-    link->SetDescription(Widen(label).c_str());
-    if (png.size() > 24) link->SetIconLocation(ico.c_str(), 0);
-    IPersistFile* file = nullptr;
-    if (SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&file))))
-    {
-        if (FAILED(file->Save(lnk.c_str(), TRUE))) std::printf("apps: cannot save %ls\n", lnk.c_str());
-        file->Release();
-    }
-    link->Release();
+    SaveShortcut(lnk, L"--launch " + Widen(package), Widen(label), png.size() > 24 ? ico : std::wstring(), 0);
+}
+
+// The settings window's shortcut next to the apps' ones (WSA has its settings app in Start), made by the client when
+// it is missing; the icon is the gear of shell32.dll. 16.10.2026.
+static void SettingsShortcut()
+{
+    const std::wstring lnk = FullPath(L"apps\\Subsystem settings.lnk");
+    if (GetFileAttributesW(lnk.c_str()) != INVALID_FILE_ATTRIBUTES) return;
+    CreateDirectoryW(FullPath(L"apps").c_str(), nullptr);
+    wchar_t shell32[MAX_PATH];
+    ExpandEnvironmentStringsW(L"%SystemRoot%\\System32\\shell32.dll", shell32, MAX_PATH);
+    SaveShortcut(lnk, L"--settings", L"Memory and performance, clipboard, turning the subsystem off", shell32, 314);
 }
 
 // action: Status.Action (0 ADDED, 1 REMOVED, 2 REPLACED) or -1 for an entry of GetList.
@@ -3451,6 +3469,7 @@ static int ClientMain(unsigned short port)
     // As the service: the VM worker calls back into the device host ("devicehost client"), and the default COM access
     // permissions of a user process refuse its account (HdvProxyDeviceHost 0x80070005).
     CoInitializeSecurity(nullptr, -1, nullptr, nullptr, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_STATIC_CLOAKING, nullptr);
+    SettingsShortcut();
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
     SetConsoleCtrlHandler(OnCtrl, TRUE);
