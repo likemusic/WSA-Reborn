@@ -781,6 +781,173 @@ static HRESULT CALLBACK HdvTestWriteMmio(PVOID, HDV_PCI_BAR_SELECTOR bar, UINT64
     return S_OK;
 }
 
+// ---- gfxstream host backend (stream_renderer_* of gfxstream_backend.dll) ---------------------------------------
+// The API crosvm/rutabaga feed virtio-gpu 3D into (AOSP gfxstream, mid-2023 header
+// host/include/gfxstream/virtio-gpu-gfxstream-renderer.h); WSA's package ships it as gfxstream_backend.dll and WsaClient
+// initialises it with flags 0x11 (EGL | GLES; 0x31 / 0x831 = + NO_VK / + SYSTEM_BLOB in its other graphics modes, + 1<<9
+// GLES 3.1), USER_DATA 0, an empty FENCE_CALLBACK and window 1x1, after gfxstream_set_d3d_device (read in WsaClient.exe
+// 2407.40000.4.0 at 0x1400a72ba, 16.10.2026). The library is loaded at run time from the user's WSA folder, as
+// wsldevicehost.dll.
+struct stream_renderer_param { UINT64 key, value; };
+struct stream_renderer_fence { UINT32 flags; UINT64 fence_id; UINT32 ctx_id; BYTE ring_idx; };
+struct GfxstreamApi
+{
+    HMODULE dll = nullptr;
+    int (*init)(stream_renderer_param*, UINT64) = nullptr;
+    void (*get_cap_set)(UINT32, UINT32*, UINT32*) = nullptr;
+    void (*fill_caps)(UINT32, UINT32, void*) = nullptr;
+    int (*context_create)(UINT32, UINT32, const char*, UINT32) = nullptr;
+    void (*context_destroy)(UINT32) = nullptr;
+    int (*resource_create)(void*, void*, UINT32) = nullptr;
+    void (*resource_unref)(UINT32) = nullptr;
+    int (*submit_cmd)(void*) = nullptr;
+    int (*transfer_read_iov)(UINT32, UINT32, UINT32, UINT32, UINT32, void*, UINT64, void*, int) = nullptr;
+    int (*transfer_write_iov)(UINT32, UINT32, UINT32, UINT32, UINT32, void*, UINT64, void*, int) = nullptr;
+    int (*attach_iov)(int, void*, int) = nullptr;
+    void (*detach_iov)(int, void**, int*) = nullptr;
+    void (*ctx_attach_resource)(int, int) = nullptr;
+    void (*ctx_detach_resource)(int, int) = nullptr;
+    int (*create_blob)(UINT32, UINT32, const void*, const void*, UINT32, const void*) = nullptr;
+    int (*export_blob)(UINT32, void*) = nullptr;
+    int (*resource_map)(UINT32, void**, UINT64*) = nullptr;
+    int (*resource_unmap)(UINT32) = nullptr;
+    int (*resource_map_info)(UINT32, UINT32*) = nullptr;
+    bool Load(const std::wstring& dir)
+    {
+        SetDllDirectoryW(dir.c_str());
+        dll = LoadLibraryExW((dir + L"\\gfxstream_backend.dll").c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (!dll) { std::printf("gfxstream: LoadLibrary %ls: %lu\n", dir.c_str(), GetLastError()); return false; }
+        init = (decltype(init))GetProcAddress(dll, "stream_renderer_init");
+        get_cap_set = (decltype(get_cap_set))GetProcAddress(dll, "stream_renderer_get_cap_set");
+        fill_caps = (decltype(fill_caps))GetProcAddress(dll, "stream_renderer_fill_caps");
+        context_create = (decltype(context_create))GetProcAddress(dll, "stream_renderer_context_create");
+        context_destroy = (decltype(context_destroy))GetProcAddress(dll, "stream_renderer_context_destroy");
+        resource_create = (decltype(resource_create))GetProcAddress(dll, "stream_renderer_resource_create");
+        resource_unref = (decltype(resource_unref))GetProcAddress(dll, "stream_renderer_resource_unref");
+        submit_cmd = (decltype(submit_cmd))GetProcAddress(dll, "stream_renderer_submit_cmd");
+        transfer_read_iov = (decltype(transfer_read_iov))GetProcAddress(dll, "stream_renderer_transfer_read_iov");
+        transfer_write_iov = (decltype(transfer_write_iov))GetProcAddress(dll, "stream_renderer_transfer_write_iov");
+        attach_iov = (decltype(attach_iov))GetProcAddress(dll, "stream_renderer_resource_attach_iov");
+        detach_iov = (decltype(detach_iov))GetProcAddress(dll, "stream_renderer_resource_detach_iov");
+        ctx_attach_resource = (decltype(ctx_attach_resource))GetProcAddress(dll, "stream_renderer_ctx_attach_resource");
+        ctx_detach_resource = (decltype(ctx_detach_resource))GetProcAddress(dll, "stream_renderer_ctx_detach_resource");
+        create_blob = (decltype(create_blob))GetProcAddress(dll, "stream_renderer_create_blob");
+        export_blob = (decltype(export_blob))GetProcAddress(dll, "stream_renderer_export_blob");
+        resource_map = (decltype(resource_map))GetProcAddress(dll, "stream_renderer_resource_map");
+        resource_unmap = (decltype(resource_unmap))GetProcAddress(dll, "stream_renderer_resource_unmap");
+        resource_map_info = (decltype(resource_map_info))GetProcAddress(dll, "stream_renderer_resource_map_info");
+        return init && get_cap_set && fill_caps && context_create && resource_create && submit_cmd && attach_iov && create_blob;
+    }
+};
+static GfxstreamApi g_gfx;
+
+// Microsoft's addition to gfxstream: gfxstream_set_latte_operations({alloc, free, open}) — the renderer takes the memory of
+// host-visible blobs (the address-space-graphics ring among them) from the embedder: alloc(size) -> pointer, free(pointer),
+// open(a, b, &section) for sections shared by name (WsaClient: WSL\<vm>\latte\gralloc_<n>, for GSK). Without them
+// create_blob dereferences null (gfxstream_backend.dll+0xca29). Here alloc is a pagefile-backed section mapped into this
+// process; the section is remembered by its pointer, so that RESOURCE_MAP_BLOB can put the same section into BAR2.
+struct LatteOps { void* (*alloc)(UINT64); void (*free)(void*); void (*open)(UINT64, UINT64, HANDLE*); };
+static std::mutex g_latteLock;
+static std::map<void*, std::pair<HANDLE, UINT64>> g_latte;  // view -> section, size
+static void* LatteAlloc(UINT64 size)
+{
+    HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, (DWORD)(size >> 32), (DWORD)size, nullptr);
+    void* p = sec ? MapViewOfFile(sec, FILE_MAP_ALL_ACCESS, 0, 0, (SIZE_T)size) : nullptr;
+    if (!p) { std::printf("latte: alloc %llu failed: %lu\n", size, GetLastError()); if (sec) CloseHandle(sec); return nullptr; }
+    std::lock_guard<std::mutex> l(g_latteLock);
+    g_latte[p] = {sec, size};
+    return p;
+}
+static void LatteFree(void* p)
+{
+    std::lock_guard<std::mutex> l(g_latteLock);
+    auto it = g_latte.find(p);
+    if (it == g_latte.end()) return;
+    UnmapViewOfFile(p);
+    CloseHandle(it->second.first);
+    g_latte.erase(it);
+}
+static void LatteOpen(UINT64 a, UINT64 b, HANDLE* out)
+{
+    std::printf("latte: open %llu %llu — not supported\n", a, b);
+    *out = nullptr;
+}
+// The section and offset that hold a host pointer of the renderer.
+static HANDLE LatteSection(void* p, UINT64* offset)
+{
+    std::lock_guard<std::mutex> l(g_latteLock);
+    auto it = g_latte.upper_bound(p);
+    if (it == g_latte.begin()) return nullptr;
+    --it;
+    UINT64 off = (UINT64)((BYTE*)p - (BYTE*)it->first);
+    if (off >= it->second.second) return nullptr;
+    *offset = off;
+    return it->second.first;
+}
+static void GfxstreamFence(void*, stream_renderer_fence* f) { std::printf("gfxstream: fence %llu ctx %u\n", f ? f->fence_id : 0, f ? f->ctx_id : 0); }
+
+// A crash inside the renderer: module and offset of the faulting address, for the disassembler.
+static LONG WINAPI GfxstreamCrash(EXCEPTION_POINTERS* e)
+{
+    HMODULE m = nullptr;
+    void* at = e->ExceptionRecord->ExceptionAddress;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)at, &m);
+    wchar_t name[MAX_PATH] = L"?";
+    if (m) GetModuleFileNameW(m, name, MAX_PATH);
+    std::printf("CRASH 0x%08lx at %p = %ls+0x%llx (access 0x%llx)\n", e->ExceptionRecord->ExceptionCode, at, name, (UINT64)((BYTE*)at - (BYTE*)m),
+                e->ExceptionRecord->NumberParameters > 1 ? (UINT64)e->ExceptionRecord->ExceptionInformation[1] : 0);
+    // Return addresses on the stack (a heuristic walk: words that point into a loaded module).
+    UINT64* sp = (UINT64*)e->ContextRecord->Rsp;
+    for (int i = 0, shown = 0; i < 512 && shown < 16; i++)
+    {
+        HMODULE mm = nullptr;
+        if (IsBadReadPtr(sp + i, 8)) break;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)sp[i], &mm) || !mm) continue;
+        wchar_t nm[MAX_PATH];
+        GetModuleFileNameW(mm, nm, MAX_PATH);
+        std::printf("  stack +0x%x: %ls+0x%llx\n", i * 8, PathFindFileNameW(nm), (UINT64)(sp[i] - (UINT64)mm));
+        shown++;
+    }
+    std::fflush(stdout);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static int GfxstreamInit(UINT64 flags)
+{
+    SetUnhandledExceptionFilter(GfxstreamCrash);
+    static LatteOps ops = {LatteAlloc, LatteFree, LatteOpen};
+    auto setLatte = (void (*)(LatteOps*))GetProcAddress(g_gfx.dll, "gfxstream_set_latte_operations");
+    if (setLatte) setLatte(&ops);
+    stream_renderer_param p[] = {{2, flags}, {1, 0}, {3, (UINT64)(uintptr_t)&GfxstreamFence}, {4, 1}, {5, 1}};
+    int r = g_gfx.init(p, 5);
+    std::printf("gfxstream: stream_renderer_init flags 0x%llx: %d\n", flags, r);
+    return r;
+}
+
+// "--gfxstream-test <WSA folder> [<flags hex>]": load, init, capset 3, a context — no VM.
+static int GfxstreamTest(const std::wstring& dir, UINT64 flags)
+{
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    if (!g_gfx.Load(dir)) return 1;
+    if (GfxstreamInit(flags)) return 1;
+    for (UINT32 set = 1; set <= 9; set++)
+    {
+        UINT32 ver = 0, size = 0;
+        g_gfx.get_cap_set(set, &ver, &size);
+        if (!size) continue;
+        std::vector<BYTE> caps(size);
+        g_gfx.fill_caps(set, ver, caps.data());
+        std::printf("gfxstream: capset %u: max version %u, size %u:", set, ver, size);
+        for (BYTE b : caps) std::printf(" %02x", b);
+        std::printf("\n");
+    }
+    int r = g_gfx.context_create(1, 4, "test", 0);
+    std::printf("gfxstream: context_create 1: %d\n", r);
+    if (g_gfx.context_destroy) g_gfx.context_destroy(1);
+    std::fflush(stdout);
+    ExitProcess(0);  // the renderer's threads keep a normal exit waiting
+}
+
 // ---- HDV virtio-gpu: the virtio-pci modern transport on HDV and the 2D commands of virtio-gpu ------------------
 // shares.txt line "hdv gpu [<HostingModel>]". Device 1af4:1050 (virtio-gpu, modern only), BAR0 4 KiB (a BAR of 32 KiB is refused by
 // the FlexibleIov add, 0xc0350005):
@@ -809,6 +976,8 @@ struct HdvGpu
     UINT32 eventsRead = 0;
     struct Resource { UINT32 format = 0, width = 0, height = 0; std::vector<std::pair<UINT64, UINT32>> backing; std::vector<BYTE> pixels; };
     std::map<UINT32, Resource> resources;
+    std::map<UINT32, std::vector<std::pair<void*, UINT64>>> apertures;  // 3D: guest memory of a resource, mapped
+    std::map<UINT32, UINT64> blobMaps;                                   // 3D: host-visible blob -> offset in BAR2
     UINT32 scanoutResource = 0;
     UINT64 flushes = 0, transfers = 0, commands = 0;
     DWORD lastBmp = 0;
@@ -818,6 +987,12 @@ struct HdvGpu
 };
 static HdvGpu g_hdvGpu;
 static UINT32 g_hdvGpuBar = 0xFFFFF000, g_hdvGpuVendor = 0x1af4;  // "hdv gpu <model> bar=<host value> vendor=<id>" (bisecting)
+static UINT32 g_hdvGpuBars[6] = {};
+static bool g_hdvGpuShmTest = false;
+static bool g_hdvGpu3d = false;                 // "gfxstream=<WSA folder>": 3D through stream_renderer_* of its gfxstream_backend.dll
+static std::wstring g_hdvGpuGfxDir;
+static UINT64 g_hdvGpuGfxFlags = 0x811;         // "flags=<hex>": EGL | GLES | SYSTEM_BLOB (host-visible blobs as sections)  // "shmtest": a 2 MiB section at BAR2+0 (the way blob resources reach the guest)
+static BYTE* g_hdvGpuShm = nullptr;  // "barN=<host value>" for N = 1..5 (bisecting the BAR the host-visible window needs)
 static const GUID kHdvGpuClass = {0x7c1e5b2c, 0x9d43, 0x4f1e, {0x8a, 0x52, 0x3b, 0x6d, 0x91, 0x0e, 0x57, 0x53}};
 static const GUID kHdvGpuInstance = {0x7c1e5b2d, 0x9d43, 0x4f1e, {0x8a, 0x52, 0x3b, 0x6d, 0x91, 0x0e, 0x57, 0x53}};
 static const UINT64 kVirtioFVersion1 = 1ULL << 32;
@@ -842,8 +1017,17 @@ static void HdvGpuBuildConfig(HdvGpu& d)
     cap(0x50, 0x60, 16, 1, 0x0000, 0x38);  // common
     cap(0x60, 0x70, 16, 3, 0x100, 4);     // ISR
     cap(0x70, 0x80, 16, 4, 0x200, 16);    // device
-    cap(0x80, 0, 20, 2, 0x300, 0x100);   // notify
+    cap(0x80, g_hdvGpu3d ? 0x94 : 0, 20, 2, 0x300, 0x100);   // notify
     put32(0x90, 4);
+    if (g_hdvGpu3d)
+    {
+        // virtio_pci_cap64: shared memory region 1 (VIRTIO_GPU_SHM_ID_HOST_VISIBLE) = all of BAR2 (8 GiB)
+        cap(0x94, 0, 24, 8, 0, 0);
+        c[0x98] = 2; c[0x99] = 1;
+        UINT64 len = ((UINT64)g_hdvGpuBars[3] << 32 | (g_hdvGpuBars[2] & ~0xFULL));
+        len = ~len + 1;
+        put32(0xa0, (UINT32)len); put32(0xa4, 0); put32(0xa8, (UINT32)(len >> 32));
+    }
 }
 
 static HRESULT CALLBACK HdvGpuInitialize(PVOID) { std::printf("hdv gpu: Initialize\n"); return S_OK; }
@@ -857,6 +1041,7 @@ static HRESULT CALLBACK HdvGpuGetDetails(PVOID, PHDV_PCI_PNP_ID id, UINT32 count
     id->SubVendorID = 0x1af4; id->SubSystemID = 0x1100;
     for (UINT32 i = 0; i < count; i++) bars[i] = 0;
     if (count > 0) bars[0] = g_hdvGpuBar;  // 4 KiB
+    for (UINT32 i = 1; i < count && i < 6; i++) bars[i] = g_hdvGpuBars[i];
     std::printf("hdv gpu: GetDetails\n");
     return S_OK;
 }
@@ -889,7 +1074,7 @@ static void HdvGpuCommonBytes(HdvGpu& d, BYTE* b)
     auto put32 = [&](int o, UINT32 v) { std::memcpy(b + o, &v, 4); };
     auto put64 = [&](int o, UINT64 v) { std::memcpy(b + o, &v, 8); };
     put32(0x00, d.dfSelect);
-    put32(0x04, d.dfSelect == 1 ? (UINT32)(kVirtioFVersion1 >> 32) : 0);
+    put32(0x04, d.dfSelect == 1 ? (UINT32)(kVirtioFVersion1 >> 32) : d.dfSelect == 0 && g_hdvGpu3d ? (1u << 0 | 1u << 3) /* VIRGL, RESOURCE_BLOB */ : 0);
     put32(0x08, d.drfSelect);
     put32(0x0c, d.drfSelect < 2 ? d.driverFeatures[d.drfSelect] : 0);
     put16(0x10, d.configMsix);
@@ -936,7 +1121,7 @@ static HRESULT CALLBACK HdvGpuReadMmio(PVOID, HDV_PCI_BAR_SELECTOR bar, UINT64 o
     else if (offset == 0x100) { value[0] = d.isr; d.isr = 0; }
     else if (offset >= 0x200 && offset < 0x210)
     {
-        UINT32 c[4] = {d.eventsRead, 0, 1 /* num_scanouts */, 0 /* num_capsets */};
+        UINT32 c[4] = {d.eventsRead, 0, 1 /* num_scanouts */, g_hdvGpu3d ? 1u : 0u /* num_capsets */};
         std::memcpy(value, (BYTE*)c + (offset - 0x200), (size_t)std::min<UINT64>(length, 0x210 - offset));
     }
     else if (offset >= 0x400 && offset < 0x400 + sizeof d.msix) std::memcpy(value, d.msix + (offset - 0x400), (size_t)std::min<UINT64>(length, 0x400 + sizeof d.msix - offset));
@@ -1003,6 +1188,206 @@ static void HdvGpuSaveFrame(HdvGpu& d)
     o.write((char*)&fh, sizeof fh); o.write((char*)&ih, sizeof ih); o.write((char*)r.pixels.data(), r.pixels.size());
 }
 
+// 3D: virtio-gpu commands of a guest with VIRGL + RESOURCE_BLOB into stream_renderer_* (the guest's gfxstream — Microsoft's
+// EGL/Vulkan/gralloc in vendor — talks address-space-graphics over execbuffer and host-visible blobs). Fences are answered
+// at once, as WsaClient does (its fence callback is empty). Guest memory reaches the renderer as iovecs of apertures
+// (HdvCreateGuestMemoryAperture per backing entry); a host-visible blob is mapped into BAR2 with
+// HdvCreateSectionBackedMmioRange from the handle stream_renderer_export_blob gives.
+struct GfxIovec { void* base; size_t len; };
+struct GfxBox { UINT32 x, y, z, w, h, d; };
+struct GfxResourceArgs { UINT32 handle, target, format, bind, width, height, depth, array_size, last_level, nr_samples, flags; };
+struct GfxCommand { UINT32 ctx_id, cmd_size; BYTE* cmd; UINT32 num_in_fences; UINT64* fences; };
+struct GfxBlob { UINT32 blob_mem, blob_flags; UINT64 blob_id, size; };
+struct GfxHandle { INT64 os_handle; UINT32 handle_type; };
+
+static void HdvGpuUnmapApertures(HdvGpu& d, UINT32 res)
+{
+    auto it = d.apertures.find(res);
+    if (it == d.apertures.end()) return;
+    for (auto& a : it->second) HdvDestroyGuestMemoryAperture(d.handle, a.first);
+    d.apertures.erase(it);
+}
+
+// Backing entries {addr u64, length u32, padding u32} at req[off..] into apertures.
+static std::vector<GfxIovec> HdvGpuIovecs(HdvGpu& d, UINT32 res, const std::vector<BYTE>& req, size_t off, UINT32 n)
+{
+    HdvGpuUnmapApertures(d, res);
+    std::vector<GfxIovec> iov;
+    auto& list = d.apertures[res];
+    for (UINT32 i = 0; i < n && off + 16 * (i + 1) <= req.size(); i++)
+    {
+        UINT64 addr;
+        UINT32 len;
+        std::memcpy(&addr, req.data() + off + 16 * i, 8);
+        std::memcpy(&len, req.data() + off + 16 * i + 8, 4);
+        UINT64 page = addr & ~4095ULL;
+        UINT32 span = (UINT32)(((addr + len + 4095) & ~4095ULL) - page);
+        PVOID p = nullptr;
+        HRESULT hr = HdvCreateGuestMemoryAperture(d.handle, page, span, FALSE, &p);
+        if (FAILED(hr)) { std::printf("hdv gpu: aperture 0x%llx %u: 0x%08lx\n", page, span, hr); continue; }
+        list.push_back({p, span});
+        iov.push_back({(BYTE*)p + (addr - page), len});
+    }
+    return iov;
+}
+
+static bool HdvGpu3d(HdvGpu& d, UINT32 type, UINT32 ctx, const std::vector<BYTE>& req, std::vector<BYTE>& resp, UINT32& outType)
+{
+    auto u32 = [&](size_t o) { UINT32 v = 0; if (o + 4 <= req.size()) std::memcpy(&v, req.data() + o, 4); return v; };
+    auto u64 = [&](size_t o) { UINT64 v = 0; if (o + 8 <= req.size()) std::memcpy(&v, req.data() + o, 8); return v; };
+    static std::map<UINT32, int> counts;
+    if (counts[type]++ < 3) std::printf("hdv gpu: 3d command 0x%04x ctx %u (%zu bytes)\n", type, ctx, req.size());
+    int r = 0;
+    switch (type)
+    {
+    case 0x0108:  // GET_CAPSET_INFO {capset_index} -> {capset_id, max_version, max_size}
+    {
+        UINT32 ver = 0, size = 0;
+        g_gfx.get_cap_set(3, &ver, &size);
+        UINT32 info[4] = {3, ver, size, 0};
+        resp.resize(24 + sizeof info);
+        std::memcpy(resp.data() + 24, info, sizeof info);
+        outType = 0x1102;
+        return true;
+    }
+    case 0x0109:  // GET_CAPSET {capset_id, capset_version}
+    {
+        UINT32 ver = 0, size = 0;
+        g_gfx.get_cap_set(u32(24), &ver, &size);
+        resp.assign(24 + size, 0);
+        if (size) g_gfx.fill_caps(u32(24), u32(28), resp.data() + 24);
+        outType = 0x1103;
+        return true;
+    }
+    case 0x0200:  // CTX_CREATE {nlen, context_init, debug_name[64]}
+    {
+        UINT32 nlen = (std::min)(u32(24), 64u);
+        std::string name(req.size() >= 32 + nlen ? (const char*)req.data() + 32 : "", req.size() >= 32 + nlen ? nlen : 0);
+        r = g_gfx.context_create(ctx, nlen, name.c_str(), u32(28));
+        std::printf("hdv gpu: context %u \"%s\" init %u: %d\n", ctx, name.c_str(), u32(28), r);
+        break;
+    }
+    case 0x0201: if (g_gfx.context_destroy) g_gfx.context_destroy(ctx); break;
+    case 0x0202: if (g_gfx.ctx_attach_resource) g_gfx.ctx_attach_resource((int)ctx, (int)u32(24)); break;
+    case 0x0203: if (g_gfx.ctx_detach_resource) g_gfx.ctx_detach_resource((int)ctx, (int)u32(24)); break;
+    case 0x0101:  // RESOURCE_CREATE_2D {resource_id, format, width, height}: a 2D texture render target, as crosvm does
+    {
+        GfxResourceArgs a{u32(24), 2 /* PIPE_TEXTURE_2D */, u32(28), 1 << 1 /* RENDER_TARGET */, u32(32), u32(36), 1, 1, 0, 0, 0};
+        r = g_gfx.resource_create(&a, nullptr, 0);
+        break;
+    }
+    case 0x0204:  // RESOURCE_CREATE_3D {resource_id, target, format, bind, width, height, depth, array_size, last_level, nr_samples, flags}
+    {
+        GfxResourceArgs a{u32(24), u32(28), u32(32), u32(36), u32(40), u32(44), u32(48), u32(52), u32(56), u32(60), u32(64)};
+        r = g_gfx.resource_create(&a, nullptr, 0);
+        break;
+    }
+    case 0x0102:  // RESOURCE_UNREF
+    {
+        UINT32 res = u32(24);
+        auto m = d.blobMaps.find(res);
+        if (m != d.blobMaps.end()) { HdvDestroySectionBackedMmioRange(d.handle, HDV_PCI_BAR2, m->second / 4096); d.blobMaps.erase(m); }
+        // Only unref, as crosvm: detach_iov on a host blob frees memory the renderer never allocated (CRT free of a
+        // latte view, a crash in ntdll); unref detaches the guest pages itself.
+        if (g_gfx.resource_unref) g_gfx.resource_unref(res);
+        HdvGpuUnmapApertures(d, res);
+        break;
+    }
+    case 0x0106:  // RESOURCE_ATTACH_BACKING {resource_id, nr_entries} + entries
+    {
+        auto iov = HdvGpuIovecs(d, u32(24), req, 32, u32(28));
+        r = g_gfx.attach_iov((int)u32(24), iov.data(), (int)iov.size());
+        break;
+    }
+    case 0x0107:  // RESOURCE_DETACH_BACKING
+    {
+        void* iov = nullptr;
+        int n = 0;
+        if (g_gfx.detach_iov) g_gfx.detach_iov((int)u32(24), &iov, &n);
+        HdvGpuUnmapApertures(d, u32(24));
+        break;
+    }
+    case 0x0105:  // TRANSFER_TO_HOST_2D {rect x y w h, offset, resource_id}
+    {
+        GfxBox b{u32(24), u32(28), 0, u32(32), u32(36), 1};
+        r = g_gfx.transfer_write_iov(u32(48), 0, 0, 0, 0, &b, u64(40), nullptr, 0);
+        break;
+    }
+    case 0x0205: case 0x0206:  // TRANSFER_TO/FROM_HOST_3D {box, offset, resource_id, level, stride, layer_stride}
+    {
+        GfxBox b{u32(24), u32(28), u32(32), u32(36), u32(40), u32(44)};
+        auto fn = type == 0x0205 ? g_gfx.transfer_write_iov : g_gfx.transfer_read_iov;
+        r = fn(u32(56), ctx, u32(60), u32(64), u32(68), &b, u64(48), nullptr, 0);
+        break;
+    }
+    case 0x0207:  // SUBMIT_3D {size, padding} + commands
+    {
+        UINT32 size = u32(24);
+        if (32 + (size_t)size > req.size()) { outType = 0x1200; return true; }
+        std::vector<BYTE> cmd(req.begin() + 32, req.begin() + 32 + size);
+        GfxCommand c{ctx, size, cmd.data(), 0, nullptr};
+        r = g_gfx.submit_cmd(&c);
+        break;
+    }
+    case 0x010c:  // RESOURCE_CREATE_BLOB {resource_id, blob_mem, blob_flags, nr_entries, blob_id, size} + entries
+    {
+        UINT32 res = u32(24), n = u32(36);
+        GfxBlob b{u32(28), u32(32), u64(40), u64(48)};
+        std::vector<GfxIovec> iov;
+        if (n) iov = HdvGpuIovecs(d, res, req, 56, n);
+        static int before = 0;
+        if (before++ < 5) std::printf("hdv gpu: create blob %u ctx %u mem %u flags 0x%x id %llu size %llu entries %u...\n", res, ctx, b.blob_mem, b.blob_flags, b.blob_id, b.size, n);
+        r = g_gfx.create_blob(ctx, res, &b, iov.empty() ? nullptr : iov.data(), (UINT32)iov.size(), nullptr);
+        static int logged = 0;
+        if (logged++ < 20 || r) std::printf("hdv gpu: blob %u mem %u flags 0x%x id %llu size %llu entries %u: %d\n", res, b.blob_mem, b.blob_flags, b.blob_id, b.size, n, r);
+        break;
+    }
+    case 0x0208:  // RESOURCE_MAP_BLOB {resource_id, padding, offset} -> {map_info}
+    {
+        UINT32 res = u32(24);
+        UINT64 offset = u64(32);
+        GfxHandle h{-1, 0};
+        void* hva = nullptr;
+        UINT64 size = 0;
+        if (g_gfx.resource_map) g_gfx.resource_map(res, &hva, &size);
+        UINT64 probeOffset = 0;
+        r = hva && LatteSection(hva, &probeOffset) ? 0 : g_gfx.export_blob ? g_gfx.export_blob(res, &h) : -1;
+        UINT32 info = 0;
+        if (g_gfx.resource_map_info) g_gfx.resource_map_info(res, &info);
+        HRESULT hr = E_FAIL;
+        UINT64 secOffset = 0;
+        HANDLE sec = hva ? LatteSection(hva, &secOffset) : nullptr;
+        if (sec && secOffset % 4096 == 0)
+            hr = HdvCreateSectionBackedMmioRange(d.handle, HDV_PCI_BAR2, offset / 4096, (size + 4095) / 4096, HdvMmioMappingFlagWriteable, sec, secOffset / 4096);
+        else if (r == 0 && h.os_handle != -1 && size)
+            hr = HdvCreateSectionBackedMmioRange(d.handle, HDV_PCI_BAR2, offset / 4096, (size + 4095) / 4096, HdvMmioMappingFlagWriteable, (HANDLE)(intptr_t)h.os_handle, 0);
+        static int logged = 0;
+        if (logged++ < 20 || FAILED(hr))
+            std::printf("hdv gpu: map blob %u at BAR2+0x%llx: export %d (handle 0x%llx type %u), map %p size %llu, info 0x%x, section: 0x%08lx\n", res, offset, r, h.os_handle, h.handle_type, hva, size, info, hr);
+        if (FAILED(hr)) { outType = 0x1200; return true; }
+        d.blobMaps[res] = offset;
+        UINT32 mi[2] = {info, 0};
+        resp.resize(24 + sizeof mi);
+        std::memcpy(resp.data() + 24, mi, sizeof mi);
+        outType = 0x1106;
+        return true;
+    }
+    case 0x0209:  // RESOURCE_UNMAP_BLOB {resource_id}
+    {
+        auto m = d.blobMaps.find(u32(24));
+        if (m != d.blobMaps.end()) { HdvDestroySectionBackedMmioRange(d.handle, HDV_PCI_BAR2, m->second / 4096); d.blobMaps.erase(m); }
+        if (g_gfx.resource_unmap) g_gfx.resource_unmap(u32(24));
+        break;
+    }
+    case 0x0103: case 0x0104:  // SET_SCANOUT, RESOURCE_FLUSH: the 2D path keeps the scanout id, frames come later
+        return false;
+    default:
+        return false;
+    }
+    if (r) { static int errs = 0; if (errs++ < 20) std::printf("hdv gpu: 3d command 0x%04x -> %d\n", type, r); outType = 0x1200; }
+    return true;
+}
+
 // One request: the device-readable descriptors make the command, the device-writable ones take the response.
 static UINT32 HdvGpuCommand(HdvGpu& d, const std::vector<BYTE>& req, std::vector<BYTE>& resp)
 {
@@ -1015,6 +1400,17 @@ static UINT32 HdvGpuCommand(HdvGpu& d, const std::vector<BYTE>& req, std::vector
     auto u64 = [&](size_t o) { UINT64 v = 0; if (o + 8 <= req.size()) std::memcpy(&v, req.data() + o, 8); return v; };
     resp.clear();
     d.commands++;
+    if (g_hdvGpu3d)
+    {
+        UINT32 t = out.type;
+        if (HdvGpu3d(d, h.type, h.ctx, req, resp, t))
+        {
+            out.type = t;
+            if (resp.empty()) resp.resize(sizeof out);
+            std::memcpy(resp.data(), &out, sizeof out);
+            return (UINT32)resp.size();
+        }
+    }
     switch (h.type)
     {
     case 0x0100:  // GET_DISPLAY_INFO
@@ -1175,7 +1571,11 @@ static void HdvInit()
             for (std::string o; in >> o;)
             {
                 if (o.rfind("bar=", 0) == 0) g_hdvGpuBar = std::stoul(o.substr(4), nullptr, 16);
+                if (o == "shmtest") g_hdvGpuShmTest = true;
+                if (o.rfind("gfxstream=", 0) == 0) g_hdvGpuGfxDir = Widen(o.substr(10));
+                if (o.rfind("flags=", 0) == 0) g_hdvGpuGfxFlags = std::stoull(o.substr(6), nullptr, 16);
                 if (o.rfind("vendor=", 0) == 0) g_hdvGpuVendor = std::stoul(o.substr(7), nullptr, 16);
+                if (o.size() > 5 && o.rfind("bar", 0) == 0 && o[3] >= '1' && o[3] <= '5' && o[4] == '=') g_hdvGpuBars[o[3] - '0'] = std::stoul(o.substr(5), nullptr, 16);
             }
             g_hdvDevices.push_back({kind, model});
         }
@@ -1196,6 +1596,11 @@ static void HdvInit()
         {
             static const HDV_PCI_DEVICE_INTERFACE iface = {HdvPciDeviceInterfaceVersion1, HdvGpuInitialize, HdvGpuTeardown, HdvGpuSetConfiguration, HdvGpuGetDetails, HdvGpuStart,
                                                            HdvGpuStop, HdvGpuReadConfig, HdvGpuWriteConfig, HdvGpuReadMmio, HdvGpuWriteMmio};
+            if (!g_hdvGpuGfxDir.empty() && g_gfx.Load(g_hdvGpuGfxDir) && GfxstreamInit(g_hdvGpuGfxFlags) == 0)
+            {
+                g_hdvGpu3d = true;
+                if (!g_hdvGpuBars[2]) { g_hdvGpuBars[2] = 0x0000000C; g_hdvGpuBars[3] = 0xFFFFFFFE; }  // 8 GiB host-visible window, as WSA
+            }
             HdvGpuBuildConfig(g_hdvGpu);
             hr = HdvCreateDeviceInstance(g_hdvHost, HdvDeviceTypePCI, &kHdvGpuClass, &kHdvGpuInstance, &iface, &g_hdvGpu, &g_hdvGpu.handle);
             if (SUCCEEDED(hr)) std::thread(HdvGpuWorker).detach();
@@ -1218,6 +1623,35 @@ static void HdvAdd()
         HCS_OPERATION op = HcsCreateOperation(nullptr, nullptr);
         HcsModifyComputeSystem(g_system, op, Widen(req).c_str(), nullptr);
         Wait(op, ("hdv " + kind + ": add FlexibleIov, " + model).c_str());
+        if (kind == "gpu" && g_hdvGpuShmTest)
+        {
+            // Host writes a text at the start of a section and maps it at BAR2+0 once the guest has enabled memory
+            // decoding (mapped before the BARs are assigned, the guest hangs in the PCI enumeration); the guest reads it
+            // through resource2 and writes at +0x100, the host polls that and logs what it saw.
+            std::thread([] {
+                for (;;)
+                {
+                    UINT16 cmd;
+                    { std::lock_guard<std::mutex> l(g_hdvGpu.lock); std::memcpy(&cmd, g_hdvGpu.cfg + 4, 2); }
+                    if (cmd & 2) break;
+                    Sleep(100);
+                }
+                Sleep(2000);
+                HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 2 << 20, nullptr);
+                g_hdvGpuShm = sec ? (BYTE*)MapViewOfFile(sec, FILE_MAP_ALL_ACCESS, 0, 0, 2 << 20) : nullptr;
+                if (g_hdvGpuShm) std::strcpy((char*)g_hdvGpuShm, "WSA blob test from the host");
+                HRESULT hr = sec ? HdvCreateSectionBackedMmioRange(g_hdvGpu.handle, HDV_PCI_BAR2, 0, 512, HdvMmioMappingFlagWriteable, sec, 0) : E_FAIL;
+                std::printf("hdv gpu: HdvCreateSectionBackedMmioRange BAR2+0, 512 pages: 0x%08lx\n", hr);
+                if (!g_hdvGpuShm) return;
+                UINT32 last = 0;
+                for (;;)
+                {
+                    UINT32 v = *(volatile UINT32*)(g_hdvGpuShm + 0x100);
+                    if (v != last) { last = v; std::printf("hdv gpu: section +0x100 now 0x%08x (written by the guest)\n", v); }
+                    Sleep(200);
+                }
+            }).detach();
+        }
     }
 }
 
@@ -4715,6 +5149,7 @@ int wmain(int argc, wchar_t** argv)
     if (argc == 2 && !wcscmp(argv[1], L"--settings")) return SettingsWindow();
     if (argc >= 2 && !wcscmp(argv[1], L"--settings-test")) return SettingsTest(argc, argv);
     if (argc == 2 && !wcscmp(argv[1], L"--networks")) return ListNetworks();
+    if (argc >= 3 && !wcscmp(argv[1], L"--gfxstream-test")) return GfxstreamTest(argv[2], argc > 3 ? std::wcstoull(argv[3], nullptr, 16) : 0x11);
     if (argc >= 4 && !wcscmp(argv[1], L"--config"))
         return MakeConfig(Narrow(argv[2]), Narrow(argv[3]), argc > 4 ? _wtoi(argv[4]) : 4096, argc > 5 ? _wtoi(argv[5]) : 4);
     if (argc >= 2 && !wcscmp(argv[1], L"--client")) return ClientMain(argc > 2 ? (unsigned short)_wtoi(argv[2]) : 58600);
