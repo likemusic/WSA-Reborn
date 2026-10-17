@@ -4245,6 +4245,10 @@ static void PaintBgrx(HDC dc, const RECT& rc, const unsigned char* bits, unsigne
 
 static LRESULT CALLBACK TaskWndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
 {
+    // Not ours until SyncTaskWindows has marked it: CreateWindowEx sends WM_SIZE while SyncTaskWindows holds
+    // g_frameLock, and the resize handling below took it again — std::mutex threw "resource deadlock would occur" and the
+    // client aborted (17.10.2026, with "scale_apps resize", on the popup of Launcher3's taskbar app list).
+    if (!IsTaskWindow(w)) return DefWindowProcW(w, msg, wp, lp);
     if (FrameInput(w, msg, wp, lp)) return 0;
     if (msg == WM_PAINT)
     {

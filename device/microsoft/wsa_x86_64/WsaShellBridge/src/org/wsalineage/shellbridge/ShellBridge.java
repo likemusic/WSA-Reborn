@@ -148,6 +148,8 @@ public final class ShellBridge implements ApiChannel.Handler {
             for (Display d : dm.getDisplays()) initializeDisplay(d.getDisplayId());
             suppressImmersiveConfirmation();
             DefaultHome.applyOnce(mContext, mH);
+            // A window per task until the host says otherwise: undo a Launcher3 home left by a one-window session.
+            DefaultHome.forOneWindow(mContext, false, null);
             dm.registerDisplayListener(mDisplayListener, mH);
             try {
                 mAtm.registerTaskStackListener(mTaskStackListener);
@@ -417,6 +419,11 @@ public final class ShellBridge implements ApiChannel.Handler {
                 } catch (RemoteException e) {
                     Slog.e(TAG, "setWindowingMode failed", e);
                 }
+                // One window: Launcher3's desktop as home (its taskbar launches apps only then); shown at
+                // once when no app is in front.
+                DefaultHome.forOneWindow(mContext,
+                        p.getWindowingMode() == WindowConfiguration.WINDOWING_MODE_FULLSCREEN,
+                        () -> mH.post(this::showHomeIfInFront));
             }
             if (p.hasStableBounds()) {
                 // At Microsoft this goes to IWsaSystemServer.updateDisplayBounds (their service inside
@@ -475,6 +482,23 @@ public final class ShellBridge implements ApiChannel.Handler {
 
     private void refreshAllTasks() {
         for (Integer taskId : new ArrayList<>(mTasks.keySet())) refreshTask(taskId);
+    }
+
+    /** The new home right away, but only over the old one: an app in front stays where it is. */
+    private void showHomeIfInFront() {
+        try {
+            List<RunningTaskInfo> top = mAtm.getTasks(1, false, false, Display.INVALID_DISPLAY);
+            if (top.isEmpty()
+                    || top.get(0).getActivityType() != WindowConfiguration.ACTIVITY_TYPE_HOME) {
+                return;
+            }
+        } catch (RemoteException e) {
+            Slog.e(TAG, "getTasks failed", e);
+            return;
+        }
+        mContext.startActivityAsUser(new Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_HOME)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), UserHandle.CURRENT);
     }
 
     private RunningTaskInfo findTask(int taskId) {
