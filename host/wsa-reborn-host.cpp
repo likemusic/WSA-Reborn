@@ -4089,8 +4089,13 @@ static int TargetTask(HWND w) { int t = WindowTask(w); return t > 0 ? t : -1; }
 
 // Where a w x h picture goes in a window's client area: the largest rect of its proportions, centred, with bars on two
 // sides — a resized window no longer squeezes the picture (16.10.2026, two instances side by side). With "stretch" in
-// settings.txt (scale_apps, scale_desktop) the whole client area.
-static bool Stretched(HWND w) { return (IsTaskWindow(w) ? g_scaleApps : g_scaleDesktop) == kScaleStretch; }
+// settings.txt (scale_apps, scale_desktop) the whole client area. So with "scale_desktop resize": the frame is the
+// window's size anyway, and while the guest relays out after a resize the old frame fills the window instead of
+// shrinking between bars (one of three visible steps, 17.10.2026).
+static bool Stretched(HWND w)
+{
+    return IsTaskWindow(w) ? g_scaleApps == kScaleStretch : g_scaleDesktop == kScaleStretch || g_scaleDesktop == kScaleResize;
+}
 static RECT FitRect(const RECT& rc, unsigned w, unsigned h, bool stretch)
 {
     RECT r = rc;
@@ -4790,7 +4795,7 @@ static void InputControl(unsigned short port)
             unsigned fw, fh;
             { std::lock_guard<std::mutex> lk(g_frameLock); fw = g_frameW; fh = g_frameH; }
             if (g_frameWnd) GetClientRect(g_frameWnd, &rc);
-            auto client = [&](float gx, float gy) { return ToFit(rc, fw, fh, g_scaleDesktop == kScaleStretch, gx, gy); };
+            auto client = [&](float gx, float gy) { return ToFit(rc, fw, fh, g_frameWnd && Stretched(g_frameWnd), gx, gy); };
             if (cmd == "snap")  // frame.bmp and task-<id>.bmp now, not at the next 10 s tick
             {
                 SaveFrameBmp();
@@ -5321,7 +5326,8 @@ static bool SpawnClient(HANDLE out, HANDLE err, DWORD flags, DWORD* pid = nullpt
 
 // The VM's life by the resources mode (ReadSettings), as WsaClient's IdleChecker: no app window for the idle time —
 // "asneeded" stops the VM, "partial" stops it and this client starts again (a fresh VM without apps, as WsaClient
-// starts a new partially running instance), "continuous" keeps it. Minimized windows count as open, as in WSA.
+// starts a new partially running instance), "continuous" keeps it. Minimized windows count as open, as in WSA, and so
+// does the shown window of the whole display.
 // settings.txt is read again every round.
 static std::atomic<bool> g_restartClient{false};
 static HANDLE g_clientMutex;
@@ -5340,6 +5346,9 @@ static void IdleWatch(bool viaService)
             std::lock_guard<std::mutex> l(g_frameLock);
             for (auto& [id, t] : g_tasks) windows |= id > 0 && t.hwnd;
         }
+        // The window of the whole display counts too while it is shown (minimized included): with "scale_desktop
+        // resize" it is the only window Android has, and the VM was stopped under the owner's hands (17.10.2026).
+        windows |= g_frameWnd && IsWindowVisible(g_frameWnd);
         if (windows) { last = GetTickCount64(); continue; }
         if (GetTickCount64() - last < (ULONGLONG)(g_idleMinutes * 60000)) continue;
         std::printf("lifecycle %s: no app window for %g minutes — %s\n", kLifecycleNames[g_lifecycle], g_idleMinutes,
