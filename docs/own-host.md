@@ -55,7 +55,7 @@ Pick a folder for the host — below `C:\WSA-Host` (`/mnt/c/WSA-Host` in WSL); t
 H=/mnt/c/WSA-Host; mkdir -p $H/share/{shared_tmp,shared_anr,shared_tombstone} $H/data
 bin/headless-vendor.sh /mnt/c/WSA/vendor.vhdx $WSA_STORAGE/headless-parts $H/vendor-headless.vhdx
 host/guest-init/build.sh $H/initrd-own.img          # needs gcc with static glibc (Ubuntu: gcc, libc6-dev)
-out=$(host/build.sh | tail -1)                      # Visual Studio 2022 with the C++ desktop workload; last line: the build folder
+out=$(host/build.sh | tail -1)                      # Visual Studio 2022 or newer with the C++ desktop workload (found by vswhere); last line: the build folder
 cp "$(wslpath "$out")/wsa-reborn-host.exe" $H/
 ```
 

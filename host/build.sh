@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds wsa-reborn-host.exe with Visual Studio 2022 (cl.exe, x64) into <Windows temp>\<dir> (default wsa-reborn-host;
+# Builds wsa-reborn-host.exe with the newest Visual Studio (cl.exe, x64) into <Windows temp>\<dir> (default wsa-reborn-host;
 # another name while a previous build is running and locked) and prints the
 # Windows path of the directory. 12.10.2026.
 set -euo pipefail
@@ -10,9 +10,13 @@ tmp=$(powershell.exe -NoProfile -Command '[IO.Path]::GetTempPath()' | tr -d '\r'
 out=$(wslpath "$tmp")/${1:-wsa-reborn-host}
 mkdir -p "$out"
 cp "$here/wsa-reborn-host.cpp" "$out/"
-vs=$(ls -d "/mnt/c/Program Files/Microsoft Visual Studio/2022/"*/VC/Auxiliary/Build | head -1)
+# The newest Visual Studio with the C++ x64 tools (vswhere ships with every edition since 2017); VS_BUILD=<WSL path to
+# VC/Auxiliary/Build> picks another one.
+vswhere="/mnt/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+vs=${VS_BUILD:-$(wslpath "$("$vswhere" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | tr -d '\r')")/VC/Auxiliary/Build}
+[ -f "$vs/vcvars64.bat" ] || { echo "no vcvars64.bat in $vs" >&2; exit 1; }
 cd "$out"
-printf '@call "%s\\vcvars64.bat" >nul\r\ncl /nologo /utf-8 /EHsc /std:c++17 /O2 /W3 wsa-reborn-host.cpp\r\n' "$(wslpath -w "$vs")" > build.bat
+printf '@call "%s\\vcvars64.bat" >nul\r\ncl /nologo /utf-8 /EHsc /std:c++20 /O2 /W3 wsa-reborn-host.cpp\r\n' "$(wslpath -w "$vs")" > build.bat
 rm -f wsa-reborn-host.exe
 cmd.exe /c build.bat | tr -d '\r' | grep -v '^wsa-reborn-host.cpp$' || true
 [ -f wsa-reborn-host.exe ] && wslpath -w "$out"
