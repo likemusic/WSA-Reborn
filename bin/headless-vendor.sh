@@ -42,6 +42,10 @@ printf '%s\n' ';; WSA-Reborn headless: SwiftShader JITs shaders inside surfacefl
     ';; WSA-Reborn headless: the HWC2 frame sink connects to the host on vsock 50100 (Microsoft composer only had read/write)' \
     '(allow windows-composer-hal self (vsock_socket (create connect getopt setopt)))' >> "$w/vendor_sepolicy.cil"
 q /etc/selinux/vendor_sepolicy.cil "$w/vendor_sepolicy.cil"
+# Microsoft's OMX plugin (Latte) waits forever for WsaClient's media service: no /sdcard (see bin/hwc-vendor.sh), 27.10.2026.
+for f in /lib/libstagefrighthw.so /lib64/libstagefrighthw.so; do
+    debugfs -R "stat $f" "$w/vendor.img" 2>/dev/null | grep -q Inode: && debugfs -w -R "rm $f" "$w/vendor.img" >/dev/null 2>&1 && echo "removed: $f"
+done
 e2fsck -fn "$w/vendor.img" >/dev/null
 md5sum "$w/vendor.img" | sed "s|$w/||"
 qemu-img convert -f raw -O vhdx -o subformat=dynamic "$w/vendor.img" "$out"

@@ -205,7 +205,7 @@ static void Relay(GUID runtimeId, unsigned short port)
     a.sin_family = AF_INET;
     a.sin_port = htons(port);
     inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
-    if (bind(l, (sockaddr*)&a, sizeof a) || listen(l, 8)) { int e = WSAGetLastError(); std::printf("relay: cannot listen on %u (%d%s)\n", port, e, e == WSAEACCES ? ": a Hyper-V port block, see netsh int ipv4 show excludedportrange protocol=tcp and --install" : ""); return; }
+    if (bind(l, (sockaddr*)&a, sizeof a) || listen(l, 8)) { int e = WSAGetLastError(); std::printf("relay: cannot listen on %u (%d%s)\n", port, e, e == WSAEACCES ? ": a Hyper-V port block, see netsh int ipv4 show excludedportrange protocol=tcp; a port below 49152 avoids them" : ""); return; }
     std::printf("relay: adb connect 127.0.0.1:%u\n", port);
     for (SOCKET c; (c = accept(l, nullptr, nullptr)) != INVALID_SOCKET;)
     {
@@ -5175,12 +5175,14 @@ static int StopService()
     return ok ? 0 : 1;
 }
 
-// Hyper-V (winnat) reserves 100-port blocks of the dynamic range at boot, and a block over the adb port and the command port
-// (port + 10) made the service exit with "relay: cannot listen on 58700 (10013)" (27.10.2026; 58527-58726 after a
-// reboot). An administrator's persistent exclusion keeps them ours, as WSA's 58526 (CLAUDE.md). A block taken already
-// is freed only by restarting winnat, which drops the NAT of WSL and of a running WSA, so that is left to the owner.
+// Hyper-V (winnat) reserves 100-port blocks of the dynamic range (49152-65535) at boot, and a block over the adb port and
+// the command port (port + 10) made the service exit with "relay: cannot listen on 58700 (10013)" (27.10.2026; 58611-58710
+// after a reboot). An administrator's persistent exclusion keeps them ours, as WSA's 58526 (CLAUDE.md), but only while
+// no block holds them; freeing a block needs "net stop winnat", which hung the network stack of Windows twice on
+// 27.10.2026 (WSL and every app over it froze until a reboot). So a port below 49152 is the way out: no block there.
 static void ExcludePorts()
 {
+    if (g_port + 10 < 49152) { std::printf("  ports %u-%u are below the dynamic range: Hyper-V does not reserve them\n", g_port, g_port + 10); return; }
     std::wstring cmd = L"netsh int ipv4 add excludedportrange protocol=tcp startport=" + std::to_wstring(g_port) + L" numberofports=11 store=persistent";
     STARTUPINFOW si{sizeof si};
     PROCESS_INFORMATION pi{};
@@ -5191,9 +5193,9 @@ static void ExcludePorts()
         GetExitCodeProcess(pi.hProcess, &code);
         CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
     }
-    if (!code) { std::printf("  ports %u-%u excluded from the dynamic range (persistent)\n", g_port, g_port + 10); return; }
-    std::printf("  ports %u-%u: no exclusion added (netsh %lu) — already excluded, or Hyper-V holds a block over them; then, as administrator:\n"
-                "    net stop winnat & %ls & net start winnat\n", g_port, g_port + 10, code, cmd.c_str());
+    if (!code) std::printf("  ports %u-%u excluded from the dynamic range (persistent)\n", g_port, g_port + 10);
+    else std::printf("  ports %u-%u: no exclusion added (netsh %lu): already excluded, or a Hyper-V block holds them (netsh int ipv4 show\n"
+                     "  excludedportrange protocol=tcp); then give the instance a \"port\" below 49152 in shares.txt and run --install again\n", g_port, g_port + 10, code);
 }
 
 static int Install(const wchar_t* folder)
@@ -5206,6 +5208,10 @@ static int Install(const wchar_t* folder)
     wcscpy_s(pf, EnvPath(Inst(L"%ProgramFiles%\\WsaReborn")).c_str());
     CreateDirectoryW(pf, nullptr);
     std::wstring exe = std::wstring(pf) + L"\\wsa-reborn-host.exe";
+    // CopyFileW carries the source's attributes over and fails with 5 on a read-only target (27.10.2026: an exe copied
+    // read-only from WSL made the next --install fail), so the targets lose the attribute first.
+    for (const wchar_t* name : {L"wsa-reborn-host.exe", L"config.json", L"shares.txt"})
+        SetFileAttributesW((std::wstring(pf) + L"\\" + name).c_str(), FILE_ATTRIBUTE_NORMAL);
     if (_wcsicmp(exe.c_str(), self) && !CopyFileW(self, exe.c_str(), FALSE)) { std::printf("cannot copy to %ls (%lu)\n", exe.c_str(), GetLastError()); return 1; }
     // What the service trusts goes next to the exe (see ConfigFile); edits in the folder take effect with --install again.
     for (const wchar_t* name : {L"config.json", L"shares.txt"})
