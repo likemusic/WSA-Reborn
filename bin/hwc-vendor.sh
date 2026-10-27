@@ -11,7 +11,7 @@
 #       /mnt/c/Users/you/AppData/Local/Temp/wsa-reborn-host-6/vendor-gpu.vhdx
 #
 # Same file path and SELinux label as Microsoft's (bin/patch-system-file.sh); vendor_sepolicy.cil gets the vsock rule of
-# the frame sink (bin/headless-vendor.sh has the same). 16.10.2026. Without Microsoft's OMX plugin (Latte) since 27.10.2026.
+# the frame sink (bin/headless-vendor.sh has the same). 16.10.2026. Without Microsoft's OMX plugin (Latte) and with qemu.hw.mainkeys=0 since 27.10.2026.
 set -euo pipefail
 src=${1:?vendor.vhdx} hwc=${2:?hwcomposer .so} out=${3:?out vhdx}
 here=$(cd "$(dirname "$0")" && pwd); P=$here/patch-system-file.sh
@@ -33,6 +33,12 @@ grep -q 'vsock_socket (create connect getopt setopt)' "$w/vendor_sepolicy.cil" |
 for f in /lib/libstagefrighthw.so /lib64/libstagefrighthw.so; do
     debugfs -R "stat $f" "$w/vendor.img" 2>/dev/null | grep -q Inode: && debugfs -w -R "rm $f" "$w/vendor.img" >/dev/null 2>&1 && echo "removed: $f"
 done
+# WSA's config_showNavigationBar is false, and Launcher3 of Android 17 creates its taskbar only on a display with a
+# navigation bar (Android 16 does not ask): no taskbar in the one-window mode (scale_desktop resize). qemu.hw.mainkeys=0
+# makes DisplayPolicy report one; with the taskbar SystemUI adds no navigation bar of its own, so A16 and A17 both get just
+# the taskbar (27.10.2026).
+debugfs -R "cat /build.prop" "$w/vendor.img" 2>/dev/null > "$w/build.prop"
+grep -q '^qemu.hw.mainkeys=' "$w/build.prop" || { printf 'qemu.hw.mainkeys=0\n' >> "$w/build.prop"; q /build.prop "$w/build.prop"; }
 e2fsck -fn "$w/vendor.img" >/dev/null
 md5sum "$w/vendor.img" | sed "s|$w/||"
 qemu-img convert -f raw -O vhdx -o subformat=dynamic "$w/vendor.img" "$out"

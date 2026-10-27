@@ -35,6 +35,8 @@ q /lib64/hw/hwcomposer.windows.so "$parts/gralloc/lib64/hw/hwcomposer.wsa_headle
 debugfs -R "cat /build.prop" "$w/vendor.img" 2>/dev/null > "$w/build.prop"
 grep -q '^ro.hardware.egl=emulation$' "$w/build.prop" || { echo "no ro.hardware.egl=emulation in build.prop" >&2; exit 1; }
 sed -i 's/^ro.hardware.egl=emulation$/ro.hardware.egl=angle/' "$w/build.prop"
+# Launcher3 of Android 17 shows its taskbar only with a navigation bar (see bin/hwc-vendor.sh), 27.10.2026.
+grep -q '^qemu.hw.mainkeys=' "$w/build.prop" || printf 'qemu.hw.mainkeys=0\n' >> "$w/build.prop"
 q /build.prop "$w/build.prop"
 debugfs -R "cat /etc/selinux/vendor_sepolicy.cil" "$w/vendor.img" 2>/dev/null > "$w/vendor_sepolicy.cil"
 printf '%s\n' ';; WSA-Reborn headless: SwiftShader JITs shaders inside surfaceflinger (anon:swiftshader_jit, PROT_EXEC) - 15.10.2026' \
