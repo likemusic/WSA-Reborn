@@ -5267,6 +5267,15 @@ static bool ProcessAlive(HANDLE p)
     return GetExitCodeProcess(p, &code) && code == STILL_ACTIVE;
 }
 
+// The process runs an exe of the same file name as this one; true when its name cannot be read (opened with SYNCHRONIZE only).
+static bool ProcessIsThisExe(HANDLE p)
+{
+    wchar_t other[MAX_PATH], self[MAX_PATH];
+    DWORD n = MAX_PATH;
+    if (!QueryFullProcessImageNameW(p, 0, other, &n) || !GetModuleFileNameW(nullptr, self, MAX_PATH)) return true;
+    return _wcsicmp(PathFindFileNameW(other), PathFindFileNameW(self)) == 0;
+}
+
 // "devicehost client": this process hosts wsldevicehost.dll for the service — one IPlan9FileSystem per files/sections
 // share, marshaled to devhost-<tag>.objref. The objects stay alive with the process (the VM's shares go with it).
 static void ClientDeviceHost()
@@ -5448,12 +5457,17 @@ static int ClientMain(unsigned short port)
         std::string ip, gw;
         if (f >> id >> pid && FAILED(CLSIDFromString(Widen(id).c_str(), &g_runtimeId))) pid = 0;
         f >> ip >> gw;
+        // Windows reuses process ids: the pid of a stopped service's runtime.txt may be any process by now (chrome.exe,
+        // 27.10.2026 — the client took it for the VM and waited without frames). The service's file counts only while
+        // the service manager names that pid; the agent's — while the process is this exe.
+        if (i % 2 && pid && ServicePid() != pid) pid = 0;
         // An elevated process may refuse one of the two rights to the plain user; either is enough.
         static const DWORD kAccess[] = {SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE, PROCESS_QUERY_LIMITED_INFORMATION};
         for (DWORD access : kAccess)
             if (pid && !service) service = OpenProcess(access, FALSE, pid);
         if (pid && !service && i % 20 == 0) std::printf("client: cannot open the service process %lu (%lu)\n", pid, GetLastError());
         if (service && !ProcessAlive(service)) { CloseHandle(service); service = nullptr; }
+        if (service && !(i % 2) && !ProcessIsThisExe(service)) { CloseHandle(service); service = nullptr; }
         // A LocalSystem service does not open its process to the user: ask the service manager instead.
         if (pid && !service && ServicePid() == pid) svcPid = pid;
         // The live VM half's address for the guest (ResolveNic) wins over shares.txt.
