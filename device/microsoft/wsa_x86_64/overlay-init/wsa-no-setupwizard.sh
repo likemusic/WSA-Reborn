@@ -17,12 +17,13 @@ log -t wsa_no_setupwizard "start uid=$(id)"
 OUT=$(pm disable --user 0 org.lineageos.setupwizard/.SetupWizardActivity 2>&1)
 RC=$?
 log -t wsa_no_setupwizard "pm-disable-exit=$RC out=[$OUT]"
-# Android 17: Launcher3 (QuickStep) crash-loops on the taskbar — NPE
-# TaskbarControllers.cueBarController in TaskbarNavButtonController (~600 times in 5 minutes, 02.10.2026).
-# The home screen in WSA is the bridge (HomeActivity); the launcher is not visible and not needed.
-if [ "$(getprop ro.build.version.sdk)" -ge 37 ] 2>/dev/null; then
-    OUT=$(pm disable --user 0 com.android.launcher3 2>&1)
-    log -t wsa_no_setupwizard "launcher3-disable-exit=$? out=[$OUT]"
+# Android 17: from 03.10.2026 this script disabled Launcher3 here — it crash-looped on the taskbar (NPE
+# TaskbarControllers.cueBarController in TaskbarNavButtonController, ~600 times in 5 minutes, 02.10.2026).
+# patches/aosp17/packages_apps_Launcher3/0001 fixed the crash (12.10.2026), and the own host needs Launcher3 as the desktop of the
+# one-window mode, so now the old disable is undone on /data pools that still carry it (shell cannot do that, uid 1000 can).
+if [ "$(getprop ro.build.version.sdk)" -ge 37 ] 2>/dev/null && pm list packages -d 2>/dev/null | grep -qx 'package:com.android.launcher3'; then
+    OUT=$(pm enable --user 0 com.android.launcher3 2>&1)
+    log -t wsa_no_setupwizard "launcher3-enable-exit=$? out=[$OUT]"
 fi
 # Settings (provisioned, and keeping the screen on: otherwise the guest reports displayRequired=false to the host and Windows
 # stops creating windows — found 11.09.2026) are set by the settings entry point above, as uid shell.

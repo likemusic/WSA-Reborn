@@ -17,6 +17,9 @@ package org.wsalineage.shellbridge;
 import android.app.ActivityManager.RunningTaskInfo;
 import android.app.ActivityTaskManager;
 import android.app.IActivityTaskManager;
+import android.app.INotificationManager;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.TaskStackListener;
 import android.app.WindowConfiguration;
 import android.content.BroadcastReceiver;
@@ -31,6 +34,7 @@ import android.hardware.display.DisplayManagerGlobal;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.PowerManager;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
@@ -147,6 +151,7 @@ public final class ShellBridge implements ApiChannel.Handler {
             DisplayManager dm = mContext.getSystemService(DisplayManager.class);
             for (Display d : dm.getDisplays()) initializeDisplay(d.getDisplayId());
             suppressImmersiveConfirmation();
+            mutePhysicalKeyboardNotification();
             DefaultHome.applyOnce(mContext, mH);
             // A window per task until the host says otherwise: undo a Launcher3 home left by a one-window session.
             DefaultHome.forOneWindow(mContext, false, null);
@@ -205,6 +210,27 @@ public final class ShellBridge implements ApiChannel.Handler {
                     Settings.Secure.IMMERSIVE_MODE_CONFIRMATIONS, "confirmed");
         } catch (RuntimeException e) {
             Slog.w(TAG, "cannot disable immersive mode confirmation: " + e);
+        }
+    }
+
+    /**
+     * Android 14+ treats the uinput keyboard of Microsoft's vendor virtualinputservice ("virtual_keyboard") as a
+     * physical one and, finding no layout for our IME, keeps posting "Configure virtual_keyboard" (seen on the own
+     * host, 17.10.2026). Keys reach Android through the bridge and text through TSF, both laid out by Windows, so
+     * the channel of that notification (SystemNotificationChannels.PHYSICAL_KEYBOARD of "android") is turned off;
+     * blocking a channel also cancels what it has posted.
+     */
+    private void mutePhysicalKeyboardNotification() {
+        try {
+            INotificationManager nm = NotificationManager.getService();
+            NotificationChannel ch = nm.getNotificationChannelForPackage(
+                    "android", Process.SYSTEM_UID, "PHYSICAL_KEYBOARD", null, false);
+            if (ch == null || ch.getImportance() == NotificationManager.IMPORTANCE_NONE) return;
+            ch.setImportance(NotificationManager.IMPORTANCE_NONE);
+            nm.updateNotificationChannelForPackage("android", Process.SYSTEM_UID, ch);
+            Slog.i(TAG, "physical keyboard notification channel turned off");
+        } catch (RemoteException | RuntimeException | LinkageError e) {
+            Slog.w(TAG, "cannot turn off the physical keyboard notification: " + e);
         }
     }
 
