@@ -205,7 +205,7 @@ static void Relay(GUID runtimeId, unsigned short port)
     a.sin_family = AF_INET;
     a.sin_port = htons(port);
     inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
-    if (bind(l, (sockaddr*)&a, sizeof a) || listen(l, 8)) { std::printf("relay: cannot listen on %u (%d)\n", port, WSAGetLastError()); return; }
+    if (bind(l, (sockaddr*)&a, sizeof a) || listen(l, 8)) { int e = WSAGetLastError(); std::printf("relay: cannot listen on %u (%d%s)\n", port, e, e == WSAEACCES ? ": a Hyper-V port block, see netsh int ipv4 show excludedportrange protocol=tcp and --install" : ""); return; }
     std::printf("relay: adb connect 127.0.0.1:%u\n", port);
     for (SOCKET c; (c = accept(l, nullptr, nullptr)) != INVALID_SOCKET;)
     {
@@ -5175,6 +5175,27 @@ static int StopService()
     return ok ? 0 : 1;
 }
 
+// Hyper-V (winnat) reserves 100-port blocks of the dynamic range at boot, and a block over the adb port and the command port
+// (port + 10) made the service exit with "relay: cannot listen on 58700 (10013)" (27.10.2026; 58527-58726 after a
+// reboot). An administrator's persistent exclusion keeps them ours, as WSA's 58526 (CLAUDE.md). A block taken already
+// is freed only by restarting winnat, which drops the NAT of WSL and of a running WSA, so that is left to the owner.
+static void ExcludePorts()
+{
+    std::wstring cmd = L"netsh int ipv4 add excludedportrange protocol=tcp startport=" + std::to_wstring(g_port) + L" numberofports=11 store=persistent";
+    STARTUPINFOW si{sizeof si};
+    PROCESS_INFORMATION pi{};
+    DWORD code = 1;
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+    {
+        WaitForSingleObject(pi.hProcess, 30000);
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
+    }
+    if (!code) { std::printf("  ports %u-%u excluded from the dynamic range (persistent)\n", g_port, g_port + 10); return; }
+    std::printf("  ports %u-%u: no exclusion added (netsh %lu) — already excluded, or Hyper-V holds a block over them; then, as administrator:\n"
+                "    net stop winnat & %ls & net start winnat\n", g_port, g_port + 10, code, cmd.c_str());
+}
+
 static int Install(const wchar_t* folder)
 {
     wchar_t self[MAX_PATH], pf[MAX_PATH];
@@ -5210,6 +5231,7 @@ static int Install(const wchar_t* folder)
                 g_svcName.c_str(), cmd.c_str(), dir.c_str(), ok ? "ok" : "FAILED", pf);
     if (sd) LocalFree(sd);
     CloseServiceHandle(s);
+    ExcludePorts();
     return ok ? 0 : 1;
 }
 
