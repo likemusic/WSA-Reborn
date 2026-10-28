@@ -32,7 +32,7 @@
 //                                            user without elevation; the service writes out.txt, the consoles and
 //                                            runtime.txt to %ProgramData%\WsaReborn (see ConfigFile)
 //   wsa-reborn-host.exe --uninstall           (administrator) stops and removes it
-//   wsa-reborn-host.exe --stop                stops the service (and the VM) without elevation
+//   wsa-reborn-host.exe --stop                stops the service (and the VM) without elevation, returns once it and the client are gone
 //
 // The service always runs split: a --client that finds no running VM starts the service itself, as WsaClient asks
 // WsaService. The service runs in session 0, so the client hands it its session and SID in client.ready: the
@@ -5960,6 +5960,27 @@ static void ReadInstance(const std::wstring& dir)
     g_toastAumid = Inst(L"WsaReborn.Host");
 }
 
+// --stop from the command line returns once the service and the folder's client are gone: a client started a second
+// after the stop answered with "0xc0000142" (STATUS_DLL_INIT_FAILED, Windows' error dialog) while the previous one was
+// still tearing down, and the service did not start (28.10.2026, host 7); ten seconds later it ran.
+static int StopServiceAndWait()
+{
+    int rc = StopService();
+    SC_HANDLE s = OpenVmService(SERVICE_QUERY_STATUS);
+    SERVICE_STATUS st{};
+    int i = 0;
+    for (; s && i < 300 && QueryServiceStatus(s, &st) && st.dwCurrentState != SERVICE_STOPPED; i++) Sleep(200);
+    if (s) CloseServiceHandle(s);
+    if (i == 300) std::printf("the service has not stopped in 60 s (state %lu)\n", st.dwCurrentState);
+    // The client exits after it sees the service gone (ClientMain), with its HDV host; the pid of client.ready.
+    DWORD pid = 0;
+    std::ifstream(ExeDir() + L"\\client.ready") >> pid;
+    HANDLE p = pid && pid != GetCurrentProcessId() ? OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
+    if (p && ProcessIsThisExe(p) && WaitForSingleObject(p, 20000) == WAIT_TIMEOUT) std::printf("the client %lu has not exited in 20 s\n", pid);
+    if (p) CloseHandle(p);
+    return rc;
+}
+
 int wmain(int argc, wchar_t** argv)
 {
     // Physical px everywhere: windows, mouse, work area and the guest display agree, and Windows no longer stretches the
@@ -5978,7 +5999,7 @@ int wmain(int argc, wchar_t** argv)
     if (argc >= 2 && !wcscmp(argv[1], L"--client")) return ClientMain(argc > 2 ? (unsigned short)_wtoi(argv[2]) : g_port);
     if (argc >= 2 && !wcscmp(argv[1], L"--install")) return Install(argc > 2 ? argv[2] : nullptr);
     if (argc >= 2 && !wcscmp(argv[1], L"--uninstall")) return Uninstall();
-    if (argc >= 2 && !wcscmp(argv[1], L"--stop")) return StopService();
+    if (argc >= 2 && !wcscmp(argv[1], L"--stop")) return StopServiceAndWait();
     if (argc == 3 && !wcscmp(argv[1], L"--service"))
     {
         g_svcDir = argv[2];
