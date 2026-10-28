@@ -82,9 +82,12 @@
              the default home once (HOME role); why — see the class itself.
              directBootAware="false": Launcher3 is unavailable before the user unlocks, and without this
              system_server picked us as home instead of FallbackHome from Settings (priority 0 versus
-             -1000) — after unlocking, the task stayed stuck on top of the launcher. -->
+             -1000) — after unlocking, the task stayed stuck on top of the launcher.
+             configChanges: the activity is empty, so a display resize (own host, scale_desktop resize) need not
+             restart it; the restart cost 351 ms of the resize transition, which waits for every window to redraw. -->
         <activity
             android:name=".HomeActivity"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density|uiMode|keyboard|keyboardHidden|navigation"
             android:directBootAware="false"
             android:exported="true"
             android:excludeFromRecents="true"
@@ -262,6 +265,13 @@
         <provider
             android:name=".PackageVerificationProvider"
             android:authorities="org.wsalineage.shellbridge.verify"
+            android:exported="true" />
+
+        <!-- Launcher3's default layout for a new desktop (own host, one window): the hotseat from position 0.
+             Exported for Launcher3, which reads it; other callers are refused in the class. -->
+        <provider
+            android:name=".LauncherLayoutProvider"
+            android:authorities="org.wsalineage.shellbridge.launcherlayout"
             android:exported="true" />
     </application>
 </manifest>

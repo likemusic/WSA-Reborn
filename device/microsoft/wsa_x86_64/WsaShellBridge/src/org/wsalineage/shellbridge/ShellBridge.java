@@ -38,6 +38,7 @@ import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.Slog;
@@ -447,9 +448,9 @@ public final class ShellBridge implements ApiChannel.Handler {
                 }
                 // One window: Launcher3's desktop as home (its taskbar launches apps only then); shown at
                 // once when no app is in front.
-                DefaultHome.forOneWindow(mContext,
-                        p.getWindowingMode() == WindowConfiguration.WINDOWING_MODE_FULLSCREEN,
-                        () -> mH.post(this::showHomeIfInFront));
+                boolean one = p.getWindowingMode() == WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
+                DefaultHome.forOneWindow(mContext, one,
+                        one ? () -> mH.post(this::showHomeIfInFront) : null);
             }
             if (p.hasStableBounds()) {
                 // At Microsoft this goes to IWsaSystemServer.updateDisplayBounds (their service inside
@@ -512,6 +513,18 @@ public final class ShellBridge implements ApiChannel.Handler {
 
     /** The new home right away, but only over the old one: an app in front stays where it is. */
     private void showHomeIfInFront() {
+        // Launcher3 is not directBootAware: before the user is unlocked its home activity does not resolve
+        // (START_INTENT_NOT_RESOLVED), and the host asks for one window that early at boot (27.10.2026).
+        if (!mContext.getSystemService(UserManager.class).isUserUnlocked()) {
+            mContext.registerReceiver(new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context c, Intent intent) {
+                    mContext.unregisterReceiver(this);
+                    showHomeIfInFront();
+                }
+            }, new IntentFilter(Intent.ACTION_USER_UNLOCKED), null, mH);
+            return;
+        }
         try {
             List<RunningTaskInfo> top = mAtm.getTasks(1, false, false, Display.INVALID_DISPLAY);
             if (top.isEmpty()
@@ -522,8 +535,11 @@ public final class ShellBridge implements ApiChannel.Handler {
             Slog.e(TAG, "getTasks failed", e);
             return;
         }
+        // Launcher3 by name: right after its recents service is switched on, a plain HOME intent still
+        // resolves to the bridge for a moment (27.10.2026).
         mContext.startActivityAsUser(new Intent(Intent.ACTION_MAIN)
                 .addCategory(Intent.CATEGORY_HOME)
+                .setPackage(DefaultHome.LAUNCHER)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), UserHandle.CURRENT);
     }
 

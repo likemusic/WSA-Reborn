@@ -38,11 +38,14 @@
 #   * Settings.apk: the 0003 activity-alias (apktool), stale oat removed;
 #   * SystemUI.apk: 0007 (WindowDecorPatch — no guest caption bar, insets and shadow inside the host window),
 #     a16/0016 (ReturnVoidPatch on ClipboardListener.onPrimaryClipChanged — no clipboard preview),
-#     0012 (ToastUiPatch + helper WsaToast — Toasts shown by Windows through the bridge);
+#     0012 (ToastUiPatch + helper WsaToast — Toasts shown by Windows through the bridge), 0029 (FreeformSettlePatch +
+#     helper WsaSettle — the leash of a task shown without a transition gets its position, input reaches the window);
 #   * Android 17+: Launcher3QuickStep.apk a17/0024 (NullFieldReturnPatch — taskbar NPE after onDestroy);
+#   * Android 16: Launcher3QuickStep.apk a16/0030 (ConstReplacePatch — the taskbar follows a display resize);
 #   * Android 14 (QPR1): Launcher3QuickStep.apk a14/0025 (NullFieldReturnPatch ×3 — taskbar NPEs on mBackButton and
 #     mControllers);
 #   * RRO WsaGsiFrameworkFix built from device/microsoft/wsa_x86_64/WsaGsiFrameworkFix;
+#   * Android 17+: RRO WsaLauncher3Fix (a17/0031 — space between the hotseat search bar and the icons);
 #   * our WsaShellBridge with its allowlist (out/WsaShellBridge.apk — bin/build-bridge-local.sh);
 #   * on Android 17, our /system/bin/init with a17/0021 (--init, same form) — the stock one has no first stage;
 #   * optionally our surfaceflinger with patch 0006 (--surfaceflinger <file> or <image>:<path>) —
@@ -303,7 +306,7 @@ PY
 "$BT/apksigner" sign --v4-signing-enabled false --key "$KEYS/platform.pk8" --cert "$KEYS/platform.x509.pem" --out "$SE/priv-app/Settings/Settings.apk" "$ST/aligned.apk"
 rm -rf "${SE:?}/priv-app/Settings/oat"
 
-step "SystemUI.apk: 0007 (no guest caption, insets, shadow — the host draws the frame), a16/0016, 0012 (Toast → Windows)"
+step "SystemUI.apk: 0007 (no guest caption, insets, shadow — the host draws the frame), a16/0016, 0012 (Toast → Windows), 0029 (input after a slow cold start)"
 SU="$WORK/sysui"; rm -rf "${SU:?}"; mkdir -p "$SU"
 # 0007: templates for A14 (QPR1) and A15–A17. Without our surfaceflinger of the same branch (A14: r17, QPR1) app
 # windows do not reach Windows anyway, but the patch is harmless.
@@ -316,6 +319,10 @@ dexpatch_jar "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/dex" ReturnVoidPatch \
 # without the bridge in the image the helper declines and ToastUI draws it as usual.
 dexpatch_jar "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/dex" ToastUiPatch
 add_helper "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/dex" WsaToast
+# 0029: a freeform task that became visible without a transition (cold start over 5 s: the OPEN transition is aborted)
+# gets its leash position and crop from FreeformTaskListener (helper WsaSettle), otherwise input misses the window.
+dexpatch_jar "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/dex" FreeformSettlePatch
+add_helper "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/dex" WsaSettle
 repack_zip "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/aligned.apk" "$SU/dex"
 "$BT/apksigner" sign --v4-signing-enabled false --key "$KEYS/platform.pk8" --cert "$KEYS/platform.x509.pem" \
     --out "$SE/priv-app/SystemUI/SystemUI.apk" "$SU/aligned.apk"
@@ -330,6 +337,19 @@ if [ "$VER" -ge 17 ]; then
         'Lcom/android/launcher3/taskbar/TaskbarNavButtonController;' onRecentsButtonLayoutChanged mControllers
     repack_zip "$L3" "$LA/aligned.apk" "$LA/dex"
     # The GSI signs Launcher3 with the AOSP testkey (not the platform key).
+    "$BT/apksigner" sign --v4-signing-enabled false --key "$KEYS/testkey.pk8" --cert "$KEYS/testkey.x509.pem" --out "$L3" "$LA/aligned.apk"
+    rm -rf "${SE:?}/priv-app/Launcher3QuickStep/oat"
+fi
+
+if [ "$VER" -eq 16 ]; then
+    # a16/0030: after the display changes size the taskbar keeps the DeviceProfile of the previous size (all apps from
+    # the taskbar in a narrow column, labels cut); recreate it on CHANGE_SUPPORTED_BOUNDS too (mask 0xF4 -> 0xFC).
+    step "Launcher3QuickStep.apk: a16/0030 (taskbar after a display resize)"
+    LA="$WORK/launcher"; rm -rf "${LA:?}"; mkdir -p "$LA"
+    L3="$SE/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk"
+    dexpatch_jar "$L3" "$LA/dex" ConstReplacePatch \
+        'Lcom/android/launcher3/taskbar/TaskbarManager$RecreationListener;' onDisplayInfoChanged 244 252
+    repack_zip "$L3" "$LA/aligned.apk" "$LA/dex"
     "$BT/apksigner" sign --v4-signing-enabled false --key "$KEYS/testkey.pk8" --cert "$KEYS/testkey.x509.pem" --out "$L3" "$LA/aligned.apk"
     rm -rf "${SE:?}/priv-app/Launcher3QuickStep/oat"
 fi
@@ -366,6 +386,18 @@ if [ -f "$CFG" ] && ! grep -q com.wsa.gsi.frameworkfix "$CFG"; then
     # before the mutable ones: zygote applies only immutable overlays to framework-res, and an entry
     # without mutable="false" left the AP3A slot crash-looping on WsaDisplayAreaPolicyProvider (11.10.2026).
     sed -i '0,/<config>/s|<config>|<config>\n    <overlay package="com.wsa.gsi.frameworkfix" mutable="false" enabled="true" />|' "$CFG"
+fi
+
+if [ "$VER" -ge 17 ]; then
+    # a17/0031: no space between the hotseat search bar and the hotseat icons when a taskbar is shown — the search bar
+    # covers the top of the icons. Not listed in the overlay config: Launcher3 is not preloaded by the zygote.
+    step "RRO WsaLauncher3Fix (a17/0031)"
+    R="$WORK/rro-l3"; rm -rf "${R:?}"; mkdir -p "$R"
+    "$BT/aapt2" compile -o "$R/compiled.zip" --dir "$DEV/WsaLauncher3Fix/res"
+    "$BT/aapt2" link -o "$R/unsigned.apk" --manifest "$DEV/WsaLauncher3Fix/AndroidManifest.xml" -I "$ANDROID_JAR" \
+        "$R/compiled.zip" --min-sdk-version 33 --target-sdk-version 34
+    "$BT/zipalign" -f 4 "$R/unsigned.apk" "$R/aligned.apk"
+    "$BT/apksigner" sign --v4-signing-enabled false --key "$KEYS/testkey.pk8" --cert "$KEYS/testkey.x509.pem" --out "$SE/overlay/WsaLauncher3Fix.apk" "$R/aligned.apk"
 fi
 
 if [ "$BRIDGE" = 1 ]; then

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Static RRO for Launcher3 of Android 17 (a17/0031): space between the hotseat search bar and the hotseat icons.
+     Picked up from /system_ext/overlay without a config.xml entry (that partition of the own host has no config). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.wsalineage.launcher3fix">
+    <application android:hasCode="false" />
+    <overlay android:targetPackage="com.android.launcher3"
+             android:isStatic="true"
+             android:priority="100" />
+</manifest>

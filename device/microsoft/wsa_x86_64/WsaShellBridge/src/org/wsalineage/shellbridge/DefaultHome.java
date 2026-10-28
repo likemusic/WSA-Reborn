@@ -14,14 +14,23 @@
  * also launches nothing unless Launcher3 is home (TaskbarActivityContext.launchFromInAppTaskbar returns
  * when there is no RecentsView). Only a change made here is undone (ONE_WINDOW_KEY): at the bridge's start
  * and when the host goes back to a window per task.
+ *
+ * The taskbar itself lives in Launcher3's TouchInteractionService (SystemUI binds to it as the recents
+ * component). With a window per task it launches nothing and only takes 70 px of navigationBars inset at
+ * the bottom of the display — a window maximized in Windows got an empty strip there (27.10.2026). So the
+ * service is enabled only while Launcher3 is home (syncTaskbar); without it SystemUI adds no navigation bar
+ * of its own (large screen) and no inset is left. Microsoft has no taskbar either.
  */
 package org.wsalineage.shellbridge;
 
 import android.app.role.RoleManager;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.os.Handler;
 import android.os.Process;
 import android.os.UserHandle;
@@ -37,6 +46,11 @@ final class DefaultHome {
     private static final String APPLIED_KEY = "wsa_default_home_applied";
     private static final String ONE_WINDOW_KEY = "wsa_home_one_window";
     static final String LAUNCHER = "com.android.launcher3";
+    private static final ComponentName TOUCH_INTERACTION = new ComponentName(LAUNCHER,
+            "com.android.quickstep.TouchInteractionService");
+
+    /** The mode of the latest forOneWindow call: role callbacks of a superseded call change nothing. */
+    private static volatile boolean sOneWindow;
 
     private DefaultHome() {}
 
@@ -60,15 +74,50 @@ final class DefaultHome {
      * the latter only if the switch to Launcher3 was ours. done runs on the main thread once the role is set.
      */
     static void forOneWindow(Context context, boolean one, Runnable done) {
+        sOneWindow = one;
         final boolean ours = Settings.Global.getInt(context.getContentResolver(), ONE_WINDOW_KEY, 0) == 1;
-        if (!one && !ours) return;
+        if (!one && !ours) {
+            syncTaskbar(context, LAUNCHER.equals(homePackage(context)));
+            return;
+        }
         final String pkg = one ? LAUNCHER : context.getPackageName();
+        // Before the role: Launcher3 starting as home finds its recents service already there.
+        if (one) syncTaskbar(context, true);
         addHome(context, pkg, ok -> {
             Slog.i(TAG, "HOME role " + (ok ? "set to " : "NOT set to ") + pkg + " (one window " + one + ")");
             if (!ok) return;
+            // At the bridge's start "back to a window per task" and the host's "one window" come together;
+            // the roles are applied in order, but a late callback of the first must not undo the second.
+            if (one != sOneWindow) return;
             Settings.Global.putInt(context.getContentResolver(), ONE_WINDOW_KEY, one ? 1 : 0);
+            if (!one) syncTaskbar(context, false);
             if (done != null) done.run();
         });
+    }
+
+    /**
+     * Launcher3's taskbar (its TouchInteractionService) on or off; no-op if already so. Launcher3 is killed on purpose:
+     * with DONT_KILL_APP the service is stopped only ~1 s later, and meanwhile TaskbarManager recreates the taskbar on
+     * the display change — in 2 switches of 6 the taskbar and its inset outlived the service (27.10.2026).
+     */
+    static void syncTaskbar(Context context, boolean on) {
+        PackageManager pm = context.getPackageManager();
+        int state = on ? PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+                : PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
+        try {
+            if (pm.getComponentEnabledSetting(TOUCH_INTERACTION) == state) return;
+            pm.setComponentEnabledSetting(TOUCH_INTERACTION, state, 0);
+            Slog.i(TAG, "Launcher3 taskbar " + (on ? "enabled" : "disabled"));
+        } catch (IllegalArgumentException | SecurityException e) {
+            Slog.w(TAG, "cannot switch Launcher3 taskbar: " + e);
+        }
+    }
+
+    private static String homePackage(Context context) {
+        ResolveInfo ri = context.getPackageManager().resolveActivity(
+                new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
+                PackageManager.MATCH_DEFAULT_ONLY);
+        return ri == null || ri.activityInfo == null ? null : ri.activityInfo.packageName;
     }
 
     private static void addHome(Context context, String pkg, Consumer<Boolean> callback) {
@@ -88,6 +137,7 @@ final class DefaultHome {
             if (ok) {
                 Settings.Global.putInt(context.getContentResolver(), APPLIED_KEY, 1);
                 Slog.i(TAG, "HOME role set to " + context.getPackageName());
+                if (!sOneWindow) syncTaskbar(context, false);
             } else {
                 Slog.w(TAG, "cannot set HOME role to " + context.getPackageName());
             }

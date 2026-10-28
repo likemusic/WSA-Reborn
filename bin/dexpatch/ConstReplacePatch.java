@@ -2,25 +2,30 @@
 // changing a compile-time constant (javac inlines static final ints at every use). Used for 0026 (new freeform windows
 // sized as on Microsoft's WSA: LaunchParamsUtil.getDefaultFreeformSize 1064x600/412x732 dp -> 1280x720/480x720, and
 // TaskLaunchParamsModifier.resolveOrientation giving an app without an orientation landscape instead of portrait).
-// The new literal is written with the narrowest const form that holds it, in the same register.
+// The new literal is written with the narrowest const form that holds it, in the same register. The literal operand of
+// <binop>-int/lit8 and /lit16 is replaced too, in the same form (a16/0030: a flag mask, `flags & (A | B)` — 27.10.2026).
 //
 // Run: bin/dexpatch.sh ConstReplacePatch <in.dex> <out.dex> <class descriptor> <method>[/<parameter count>] <old> <new> [<count>]
 //   e.g. 'Lcom/android/server/wm/LaunchParamsUtil;' getDefaultFreeformSize 1064 1280
 //   "/<n>" picks one overload (TaskLaunchParamsModifier has resolveOrientation/1 and resolveOrientation/3).
 // Exit code 1 unless exactly <count> (default 1) literals were replaced. 12.10.2026.
 import com.android.tools.smali.dexlib2.DexFileFactory;
+import com.android.tools.smali.dexlib2.Format;
 import com.android.tools.smali.dexlib2.Opcode;
 import com.android.tools.smali.dexlib2.Opcodes;
 import com.android.tools.smali.dexlib2.builder.BuilderInstruction;
 import com.android.tools.smali.dexlib2.builder.MutableMethodImplementation;
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction11n;
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction21s;
+import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction22b;
+import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction22s;
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction31i;
 import com.android.tools.smali.dexlib2.iface.DexFile;
 import com.android.tools.smali.dexlib2.iface.Method;
 import com.android.tools.smali.dexlib2.iface.MethodImplementation;
 import com.android.tools.smali.dexlib2.iface.instruction.NarrowLiteralInstruction;
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction;
+import com.android.tools.smali.dexlib2.iface.instruction.TwoRegisterInstruction;
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethod;
 import com.android.tools.smali.dexlib2.rewriter.DexRewriter;
 import com.android.tools.smali.dexlib2.rewriter.Rewriter;
@@ -53,6 +58,16 @@ public class ConstReplacePatch {
                     for (int k = 0; k < code.size(); k++) {
                         BuilderInstruction i = code.get(k);
                         Opcode op = i.getOpcode();
+                        if (op.format == Format.Format22s || op.format == Format.Format22b) {
+                            if (((NarrowLiteralInstruction) i).getNarrowLiteral() != from) continue;
+                            TwoRegisterInstruction t = (TwoRegisterInstruction) i;
+                            boolean lit8 = op.format == Format.Format22b;
+                            if (lit8 ? to != (byte) to : to != (short) to) throw new IllegalArgumentException(op.name + ": " + to + " does not fit");
+                            mi.replaceInstruction(k, lit8 ? new BuilderInstruction22b(op, t.getRegisterA(), t.getRegisterB(), to)
+                                    : new BuilderInstruction22s(op, t.getRegisterA(), t.getRegisterB(), to));
+                            done[0]++;
+                            continue;
+                        }
                         if (op != Opcode.CONST_4 && op != Opcode.CONST_16 && op != Opcode.CONST) continue;
                         if (((NarrowLiteralInstruction) i).getNarrowLiteral() != from) continue;
                         int reg = ((OneRegisterInstruction) i).getRegisterA();

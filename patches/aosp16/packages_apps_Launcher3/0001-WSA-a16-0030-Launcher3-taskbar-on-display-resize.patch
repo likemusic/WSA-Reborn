@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Valerij Ivashchenko <likemusicdev@gmail.com>
+Date: Tue, 27 Oct 2026 12:00:00 +0000
+Subject: [PATCH] WSA a16/0030: Launcher3 - TaskbarManager recreates the taskbar on CHANGE_SUPPORTED_BOUNDS (it kept the DeviceProfile of the previous display size)
+
+---
+diff --git a/quickstep/src/com/android/launcher3/taskbar/TaskbarManager.java b/quickstep/src/com/android/launcher3/taskbar/TaskbarManager.java
+--- a/quickstep/src/com/android/launcher3/taskbar/TaskbarManager.java
++++ b/quickstep/src/com/android/launcher3/taskbar/TaskbarManager.java
+@@ -33,6 +33,7 @@
+ import static com.android.launcher3.util.DisplayController.CHANGE_DESKTOP_MODE;
+ import static com.android.launcher3.util.DisplayController.CHANGE_NAVIGATION_MODE;
+ import static com.android.launcher3.util.DisplayController.CHANGE_SHOW_LOCKED_TASKBAR;
++import static com.android.launcher3.util.DisplayController.CHANGE_SUPPORTED_BOUNDS;
+ import static com.android.launcher3.util.DisplayController.CHANGE_TASKBAR_PINNING;
+ import static com.android.launcher3.util.Executors.UI_HELPER_EXECUTOR;
+ import static com.android.launcher3.util.FlagDebugUtils.formatFlagChange;
+@@ -215,8 +216,11 @@
+                 debugTaskbarManager("onDisplayInfoChanged: Taskbar pinning changed", displayId);
+             }
+ 
++            // WSA: the display changes size at runtime (own host, scale_desktop resize). onConfigurationChanged() takes the
++            // DeviceProfile before InvariantDeviceProfile (the priority listener of DisplayController) has rebuilt its
++            // profiles for the new bounds, so the taskbar kept the previous size; recreate it once they are rebuilt.
+             if ((flags & (CHANGE_DENSITY | CHANGE_NAVIGATION_MODE | CHANGE_DESKTOP_MODE
+-                    | CHANGE_TASKBAR_PINNING | CHANGE_SHOW_LOCKED_TASKBAR)) != 0) {
++                    | CHANGE_TASKBAR_PINNING | CHANGE_SHOW_LOCKED_TASKBAR | CHANGE_SUPPORTED_BOUNDS)) != 0) {
+ 
+                 TaskbarActivityContext taskbarActivityContext = getCurrentActivityContext();
+                 if ((flags & CHANGE_SHOW_LOCKED_TASKBAR) != 0) {

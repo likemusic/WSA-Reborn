@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- a17/0031. With a taskbar (every tablet, and the own host's window) and the search bar not inline, A17 puts the
+         search bar (OseWidgetView, without a chosen search engine its fallback "Search" pill) on top of the hotseat with
+         hotseatQsbSpace between them; no grid of device_profiles.xml sets it, so it is this default, 0 — and the
+         fallback pill fills the whole widget height (the 6 dp shadow included), covering the top of the icons
+         (own host, Android 17, 1280×770, 28.10.2026). In dp, as the original: DeviceProfile converts it later. -->
+    <dimen name="hotseat_qsb_space_default">16</dimen>
+</resources>

@@ -1,0 +1,84 @@
+--- a/libs/WindowManager/Shell/src/com/android/wm/shell/freeform/FreeformTaskListener.java	2026-10-15 04:32:38.066679231 +0300
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/freeform/FreeformTaskListener.java	2026-10-15 05:00:16.294801643 +0300
+@@ -22,6 +22,10 @@
+ 
+ import android.app.ActivityManager.RunningTaskInfo;
+ import android.content.Context;
++import android.graphics.Rect;
++import android.os.Handler;
++import android.os.Looper;
++import android.util.Log;
+ import android.util.SparseArray;
+ import android.view.SurfaceControl;
+ 
+@@ -52,6 +56,18 @@
+ 
+     private final SparseArray<State> mTasks = new SparseArray<>();
+ 
++    // WSA (Windows Subsystem for Android): an OPEN transition whose BLAST sync times out before the app process attaches
++    // (cold start over 5 s, e.g. a heavy React Native init) goes out empty and is aborted ("No transition roots"); the
++    // task then becomes visible without a transition, FreeformTaskTransitionObserver never calls onTaskOpening, and
++    // nobody positions or crops the task leash. It stays at (0, 0): the window is drawn in its own Windows window all
++    // the same, but input (host mouse and adb alike) is dispatched by the leash geometry and misses it. So a while after
++    // a task turns visible, do what the opening would have done: the decoration (a plain relayout if there is one) and
++    // the leash position and crop the transition sets for freeform tasks.
++    private static final long WSA_VISIBLE_SETTLE_MS = 500;
++    // Created on first use, on the shell main thread the task callbacks come on: the listener itself is constructed
++    // on the SystemUI main thread, and a decoration opened from there would be touched from two threads.
++    private Handler mWsaHandler;
++
+     private static class State {
+         RunningTaskInfo mTaskInfo;
+         SurfaceControl mLeash;
+@@ -90,6 +106,9 @@
+         state.mTaskInfo = taskInfo;
+         state.mLeash = leash;
+         mTasks.put(taskInfo.taskId, state);
++        if (taskInfo.isVisible) {
++            wsaSettleVisibleTask(taskInfo.taskId);
++        }
+         if (!Transitions.ENABLE_SHELL_TRANSITIONS) {
+             SurfaceControl.Transaction t = new SurfaceControl.Transaction();
+             mWindowDecorationViewModel.onTaskOpening(taskInfo, leash, t, t);
+@@ -112,6 +131,29 @@
+         }
+     }
+ 
++    private void wsaSettleVisibleTask(int taskId) {
++        if (mWsaHandler == null) {
++            mWsaHandler = new Handler(Looper.myLooper());
++        }
++        mWsaHandler.postDelayed(() -> {
++            final State state = mTasks.get(taskId);
++            if (state == null || !state.mTaskInfo.isVisible
++                    || state.mTaskInfo.getWindowingMode() != WINDOWING_MODE_FREEFORM) {
++                return;
++            }
++            final RunningTaskInfo info = state.mTaskInfo;
++            final Rect bounds = info.configuration.windowConfiguration.getBounds();
++            final SurfaceControl.Transaction t = new SurfaceControl.Transaction();
++            mWindowDecorationViewModel.onTaskChanging(info, state.mLeash, t, t);
++            t.setPosition(state.mLeash, info.positionInParent.x, info.positionInParent.y)
++                    .setWindowCrop(state.mLeash, bounds.width(), bounds.height())
++                    .show(state.mLeash)
++                    .apply();
++            Log.i(TAG, "WSA: settled visible task #" + taskId + " at " + info.positionInParent
++                    + " " + bounds.width() + "x" + bounds.height());
++        }, WSA_VISIBLE_SETTLE_MS);
++    }
++
+     @Override
+     public void onTaskVanished(RunningTaskInfo taskInfo) {
+         ProtoLog.v(ShellProtoLogGroup.WM_SHELL_TASK_ORG, "Freeform Task Vanished: #%d",
+@@ -142,7 +184,11 @@
+         ProtoLog.v(ShellProtoLogGroup.WM_SHELL_TASK_ORG, "Freeform Task Info Changed: #%d",
+                 taskInfo.taskId);
+         mWindowDecorationViewModel.onTaskInfoChanged(taskInfo);
++        final boolean becameVisible = taskInfo.isVisible && !state.mTaskInfo.isVisible;
+         state.mTaskInfo = taskInfo;
++        if (becameVisible) {
++            wsaSettleVisibleTask(taskInfo.taskId);
++        }
+         if (DesktopModeStatus.canEnterDesktopMode(mContext)) {
+             mDesktopModeTaskRepository.ifPresent(repository -> {
+                 if (taskInfo.isVisible) {

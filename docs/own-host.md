@@ -97,6 +97,7 @@ microphone on           # Android's recording from Windows' default microphone; 
 scale_apps resize       # an app window resized or maximized: fit (default) | stretch | resize — see below
 scale_desktop fit       # the window of the whole Android display: fit (default) | stretch | resize — see below
 desktop_window hide     # the window of the whole Android display at start: hide (default) | show; the tray icon shows it
+adb on                  # adb on 127.0.0.1:<port> (WSA's "Developer mode"): on (default) | off — off refuses new connections at once
 ```
 
 The client re-reads the file every 5 seconds; `lifecycle`, `idle`, `clipboard`, `microphone` and the `scale_` lines apply at once, `memory` at the next start of the VM.
@@ -122,11 +123,11 @@ Then, as the normal user:
 | `wsa-reborn-host.exe --client` | starts the desktop half; with the VM off it starts the service, as `WsaClient` asks `WsaService` |
 | `wsa-reborn-host.exe --launch <package>` | starts an app; with the VM off starts the client (and the VM) first and waits for it |
 | `wsa-reborn-host.exe --lifecycle continuous\|asneeded\|partial` | writes the mode into `settings.txt`; `continuous` and `partial` also start the client at sign-in (a `Run` value of the user), as WSA's startup tasks do |
-| `wsa-reborn-host.exe --settings` | the settings window: resources mode, idle time, memory, clipboard, microphone, how windows scale, the subsystem's state and "Turn off" — it writes `settings.txt` and the start at sign-in, like `--lifecycle` |
+| `wsa-reborn-host.exe --settings` | the settings window: resources mode, idle time, memory, clipboard, microphone, how windows scale, "Developer mode" (adb), the subsystem's state and "Turn off" — it writes `settings.txt` and the start at sign-in, like `--lifecycle`; "Android apps" lists the apps of the running subsystem (Open, Uninstall, Refresh), "About" shows the build, the instance, its ports and the service |
 | `wsa-reborn-host.exe --stop` | stops the service and the VM |
 | `wsa-reborn-host.exe --uninstall` | (administrator) stops and removes the service and the Program Files copy |
 
-A launchable app gets a shortcut with its icon in `C:\WSA-Host\apps\` (it runs `--launch <package>`), and the client puts `Subsystem settings` there too (it runs `--settings`); pin the ones you use to Start or the taskbar. `adb connect 127.0.0.1:58600` works from Windows; from WSL run `host/adb-wsl-tunnel.sh` and use `adb connect 127.0.0.1:58601` (WSL in NAT mode cannot reach Windows' loopback).
+A launchable app gets a shortcut with its icon in `C:\WSA-Host\apps\` (it runs `--launch <package>`), and the client puts `Subsystem settings` there too (it runs `--settings`); pin the ones you use to Start or the taskbar. `adb connect 127.0.0.1:58600` works from Windows (unless `adb off`); from WSL run `host/adb-wsl-tunnel.sh` and use `adb connect 127.0.0.1:58601` (WSL in NAT mode cannot reach Windows' loopback).
 
 ## Hardware graphics (experimental)
 
