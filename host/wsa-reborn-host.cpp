@@ -149,6 +149,23 @@ static std::wstring g_configDir, g_userDir;
 static std::wstring ConfigFile(const wchar_t* name) { return g_configDir.empty() ? name : g_configDir + L"\\" + name; }
 static std::wstring UserFile(const std::wstring& name) { return g_userDir.empty() ? name : g_userDir + L"\\" + name; }
 
+// settings.txt "adb on|off" (WSA's "Developer mode"), read at every adb connection by the relay, so it applies at once:
+// off refuses new connections (open ones live on, as WSA's). On without the line. 28.10.2026.
+static bool AdbSetting()
+{
+    std::ifstream f(UserFile(L"settings.txt"));
+    bool on = true;
+    for (std::string line; std::getline(f, line);)
+    {
+        std::istringstream in(line);
+        std::string key, value;
+        if ((in >> key >> value) && key == "adb") on = value != "off";
+    }
+    static std::atomic<int> last{-1};
+    if (last.exchange(on) != (int)on) std::printf("relay: adb %s (settings.txt)\n", on ? "on" : "off");
+    return on;
+}
+
 // The guest display, as WSA's: the work area of Windows in physical px (the process is DPI aware, wmain), density by
 // the system scale (125 % = 200 dpi). Task windows map guest px 1:1 to screen px from the work area's corner, so a
 // smaller display cut off windows wider than it (1280x800 until 17.10.2026: "Settings" resized to 1661 px lost the
@@ -209,6 +226,7 @@ static void Relay(GUID runtimeId, unsigned short port)
     std::printf("relay: adb connect 127.0.0.1:%u\n", port);
     for (SOCKET c; (c = accept(l, nullptr, nullptr)) != INVALID_SOCKET;)
     {
+        if (!AdbSetting()) { closesocket(c); continue; }
         SOCKET h = socket(AF_HYPERV, SOCK_STREAM, HV_PROTOCOL_RAW);
         SOCKADDR_HV hv{};
         hv.Family = AF_HYPERV;
@@ -645,6 +663,8 @@ static void ReadSharesSettings()
 //       display the size of that window (our HWC2 reconnects the display at the new size, FrameSendDisplaySize) — then
 //       Android lives in this one window, as in an emulator, and there are no app windows: those map the guest display
 //       1:1 onto the work area (17.10.2026, the owner's decision).
+//   adb on|off — the adb relay on 127.0.0.1:<port>, WSA's "Developer mode"; on by default (the host is a test bench),
+//       off refuses new connections at once. Read by the VM half at every connection (AdbSetting). 28.10.2026.
 //   desktop_window show|hide — the window of the whole guest display at the client's start: hidden by default (WSA has
 //       no such window; the tray icon shows it). Always shown with "scale_desktop resize". 17.10.2026.
 enum { kContinuous = 0, kAsNeeded = 1, kPartial = 2 };  // WSA's VMLifeCycleMode values
@@ -5709,7 +5729,7 @@ static int SetLifecycle(const wchar_t* mode)
 // desktop. 16.10.2026. Since 28.10.2026 also "Android apps" and "About" as in WSA's window (see SettingsAppsLoad,
 // SettingsAboutText; checked by --settings-apps-test).
 enum { kIdRadio = 100, kIdIdle = 110, kIdMemory = 111, kIdClip = 112, kIdState = 113, kIdTurnOff = 114, kIdMic = 115, kIdScaleApps = 116, kIdScaleDesktop = 117, kIdDesktopWindow = 118, kIdAppList = 119, kIdAppOpen = 120,
-       kIdAppUninstall = 121, kIdAppRefresh = 122, kIdAbout = 123, kIdSave = IDOK, kIdClose = IDCANCEL };
+       kIdAppUninstall = 121, kIdAppRefresh = 122, kIdAbout = 123, kIdAdb = 124, kIdSave = IDOK, kIdClose = IDCANCEL };
 static const wchar_t* const kLifecycleLabels[] = {
     L"Continuous — the subsystem runs from sign-in and is always ready",
     L"As needed — starts with an app, turns off when no app is open",
@@ -5771,6 +5791,7 @@ static void SettingsLoad(HWND w)
     ComboBox_SetCurSel(GetDlgItem(w, kIdScaleApps), g_scaleApps.load());
     ComboBox_SetCurSel(GetDlgItem(w, kIdScaleDesktop), g_scaleDesktop.load());
     Button_SetCheck(GetDlgItem(w, kIdDesktopWindow), g_desktopWindow ? BST_CHECKED : BST_UNCHECKED);
+    Button_SetCheck(GetDlgItem(w, kIdAdb), lines.count("adb") && lines["adb"] == "off" ? BST_UNCHECKED : BST_CHECKED);
 }
 
 static bool SettingsSave(HWND w)
@@ -5791,7 +5812,8 @@ static bool SettingsSave(HWND w)
                              {"microphone", Button_GetCheck(GetDlgItem(w, kIdMic)) == BST_CHECKED ? "on" : "off"},
                              {"scale_apps", kScaleNames[(std::max)(0, ComboBox_GetCurSel(GetDlgItem(w, kIdScaleApps)))]},
                              {"scale_desktop", kScaleNames[(std::max)(0, ComboBox_GetCurSel(GetDlgItem(w, kIdScaleDesktop)))]},
-                             {"desktop_window", Button_GetCheck(GetDlgItem(w, kIdDesktopWindow)) == BST_CHECKED ? "show" : "hide"}});
+                             {"desktop_window", Button_GetCheck(GetDlgItem(w, kIdDesktopWindow)) == BST_CHECKED ? "show" : "hide"},
+                             {"adb", Button_GetCheck(GetDlgItem(w, kIdAdb)) == BST_CHECKED ? "on" : "off"}});
     LSTATUS rc = SetSignInStart(m != kAsNeeded);
     std::printf("settings: settings.txt %s, start at sign-in %s: %s\n", ok ? "written" : "NOT written", m == kAsNeeded ? "removed" : "set", rc ? "FAILED" : "ok");
     if (!ok || rc) SettingsMessage(w, ok ? L"Cannot set the start at sign-in." : L"Cannot write settings.txt.", MB_ICONERROR);
@@ -5953,7 +5975,7 @@ static HWND SettingsCreate(bool visible)
     static const std::wstring cls = Inst(L"WsaRebornHostSettings");
     wc.lpszClassName = cls.c_str();
     RegisterClassW(&wc);
-    RECT r{0, 0, px(520), px(780)};
+    RECT r{0, 0, px(520), px(808)};
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRectExForDpi(&r, style, FALSE, 0, dpi);
     HWND w = CreateWindowExW(0, wc.lpszClassName, L"WSA-Reborn host — settings", style, CW_USEDEFAULT, CW_USEDEFAULT,
@@ -5988,18 +6010,21 @@ static HWND SettingsCreate(bool visible)
         SendMessageW(desktop, CB_ADDSTRING, 0, (LPARAM)(i == kScaleResize ? kScaleDesktopResize : kScaleLabels[i]));
     }
     add(L"BUTTON", L"Show the whole display's window at start (the tray icon shows it too)", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 334, 496, 24, kIdDesktopWindow);
-    add(L"STATIC", L"", SS_LEFT, 12, 376, 340, 20, kIdState);
-    add(L"BUTTON", L"Turn off", BS_PUSHBUTTON | WS_TABSTOP, 360, 370, 148, 30, kIdTurnOff);
-    add(L"BUTTON", L"Android apps", BS_GROUPBOX, 12, 412, 496, 210, -1);
-    add(L"LISTBOX", L"", LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_BORDER | WS_TABSTOP, 24, 434, 472, 140, kIdAppList);
-    add(L"BUTTON", L"Open", BS_PUSHBUTTON | WS_TABSTOP, 24, 582, 124, 28, kIdAppOpen);
-    add(L"BUTTON", L"Uninstall", BS_PUSHBUTTON | WS_TABSTOP, 156, 582, 124, 28, kIdAppUninstall);
-    add(L"BUTTON", L"Refresh", BS_PUSHBUTTON | WS_TABSTOP, 372, 582, 124, 28, kIdAppRefresh);
-    add(L"BUTTON", L"About", BS_GROUPBOX, 12, 630, 496, 76, -1);
-    add(L"STATIC", SettingsAboutText().c_str(), SS_LEFT, 24, 650, 472, 50, kIdAbout);
-    add(L"STATIC", L"Saved settings apply to a running client within seconds.", SS_LEFT, 12, 716, 496, 20, -1);
-    add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON | WS_TABSTOP, 252, 740, 124, 30, kIdSave);
-    add(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, 384, 740, 124, 30, kIdClose);
+    wchar_t adb[96];
+    swprintf_s(adb, L"Developer mode: adb on 127.0.0.1:%u (applies at once)", g_port);
+    add(L"BUTTON", adb, BS_AUTOCHECKBOX | WS_TABSTOP, 12, 362, 496, 24, kIdAdb);
+    add(L"STATIC", L"", SS_LEFT, 12, 404, 340, 20, kIdState);
+    add(L"BUTTON", L"Turn off", BS_PUSHBUTTON | WS_TABSTOP, 360, 398, 148, 30, kIdTurnOff);
+    add(L"BUTTON", L"Android apps", BS_GROUPBOX, 12, 440, 496, 210, -1);
+    add(L"LISTBOX", L"", LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_BORDER | WS_TABSTOP, 24, 462, 472, 140, kIdAppList);
+    add(L"BUTTON", L"Open", BS_PUSHBUTTON | WS_TABSTOP, 24, 610, 124, 28, kIdAppOpen);
+    add(L"BUTTON", L"Uninstall", BS_PUSHBUTTON | WS_TABSTOP, 156, 610, 124, 28, kIdAppUninstall);
+    add(L"BUTTON", L"Refresh", BS_PUSHBUTTON | WS_TABSTOP, 372, 610, 124, 28, kIdAppRefresh);
+    add(L"BUTTON", L"About", BS_GROUPBOX, 12, 658, 496, 76, -1);
+    add(L"STATIC", SettingsAboutText().c_str(), SS_LEFT, 24, 678, 472, 50, kIdAbout);
+    add(L"STATIC", L"Saved settings apply to a running client within seconds.", SS_LEFT, 12, 744, 496, 20, -1);
+    add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON | WS_TABSTOP, 252, 768, 124, 30, kIdSave);
+    add(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, 384, 768, 124, 30, kIdClose);
     SettingsLoad(w);
     SettingsAppsLoad(w);
     SettingsState(w);
@@ -6022,7 +6047,7 @@ static int SettingsWindow()
 
 static int SettingsTest(int argc, wchar_t** argv)
 {
-    if (argc < 6) { std::printf("--settings-test <lifecycle> <idle> <memory: config|default|GB> <clipboard on|off> [<microphone on|off> [<scale_apps> <scale_desktop> [<desktop_window show|hide>]]]\n"); return 2; }
+    if (argc < 6) { std::printf("--settings-test <lifecycle> <idle> <memory: config|default|GB> <clipboard on|off> [<microphone on|off> [<scale_apps> <scale_desktop> [<desktop_window show|hide> [<adb on|off>]]]]\n"); return 2; }
     g_settingsTest = true;
     HWND w = SettingsCreate(false);
     auto show = [&](const char* when) {
@@ -6035,10 +6060,11 @@ static int SettingsTest(int argc, wchar_t** argv)
         SendMessageW(combo, CB_GETLBTEXT, ComboBox_GetCurSel(combo), (LPARAM)mem);
         GetDlgItemTextW(w, kIdState, state, 128);
         const int sa = ComboBox_GetCurSel(GetDlgItem(w, kIdScaleApps)), sd = ComboBox_GetCurSel(GetDlgItem(w, kIdScaleDesktop));
-        std::printf("%s: lifecycle %s, idle %ls, memory %ls, clipboard %s, microphone %s, apps %s, desktop %s, desktop window %s; %ls (Turn off %s)\n", when, m < 0 ? "-" : kLifecycleNames[m], idle, mem,
+        std::printf("%s: lifecycle %s, idle %ls, memory %ls, clipboard %s, microphone %s, apps %s, desktop %s, desktop window %s, adb %s; %ls (Turn off %s)\n", when, m < 0 ? "-" : kLifecycleNames[m], idle, mem,
                     Button_GetCheck(GetDlgItem(w, kIdClip)) == BST_CHECKED ? "on" : "off", Button_GetCheck(GetDlgItem(w, kIdMic)) == BST_CHECKED ? "on" : "off",
                     sa < 0 ? "-" : kScaleNames[sa], sd < 0 ? "-" : kScaleNames[sd],
-                    Button_GetCheck(GetDlgItem(w, kIdDesktopWindow)) == BST_CHECKED ? "show" : "hide", state,
+                    Button_GetCheck(GetDlgItem(w, kIdDesktopWindow)) == BST_CHECKED ? "show" : "hide",
+                    Button_GetCheck(GetDlgItem(w, kIdAdb)) == BST_CHECKED ? "on" : "off", state,
                     IsWindowEnabled(GetDlgItem(w, kIdTurnOff)) ? "enabled" : "disabled");
     };
     show("loaded");
@@ -6055,6 +6081,7 @@ static int SettingsTest(int argc, wchar_t** argv)
         for (int i = 0; i < 3; i++)
             if (Narrow(argv[a]) == kScaleNames[i]) ComboBox_SetCurSel(GetDlgItem(w, a == 7 ? kIdScaleApps : kIdScaleDesktop), i);
     if (argc > 9) Button_SetCheck(GetDlgItem(w, kIdDesktopWindow), !wcscmp(argv[9], L"show") ? BST_CHECKED : BST_UNCHECKED);
+    if (argc > 10) Button_SetCheck(GetDlgItem(w, kIdAdb), !wcscmp(argv[10], L"on") ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(w, WM_COMMAND, MAKEWPARAM(kIdSave, BN_CLICKED), 0);
     show("saved");
     std::ifstream f(ExeDir() + L"\\settings.txt");

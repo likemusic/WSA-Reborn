@@ -19,3 +19,5 @@ idle 10
 # scale_desktop fit
 # desktop_window show|hide — the window of the whole Android display at start: hidden by default, the tray icon shows it
 # desktop_window hide
+# adb on|off — adb on 127.0.0.1:<port> (WSA's "Developer mode"): on by default, off refuses new connections at once
+# adb on
