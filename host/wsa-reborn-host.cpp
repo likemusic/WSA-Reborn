@@ -5706,8 +5706,10 @@ static int SetLifecycle(const wchar_t* mode)
 // off". It edits settings.txt next to the exe through WriteSettings — what the client re-reads every 5 seconds — and the
 // start at sign-in as --lifecycle does. "--settings-test <lifecycle> <idle> <memory> <clipboard>" runs the same window
 // hidden, prints what it loaded, sets the controls, presses Save and prints the file: a check without a window on the
-// desktop. 16.10.2026.
-enum { kIdRadio = 100, kIdIdle = 110, kIdMemory = 111, kIdClip = 112, kIdState = 113, kIdTurnOff = 114, kIdMic = 115, kIdScaleApps = 116, kIdScaleDesktop = 117, kIdDesktopWindow = 118, kIdSave = IDOK, kIdClose = IDCANCEL };
+// desktop. 16.10.2026. Since 28.10.2026 also "Android apps" and "About" as in WSA's window (see SettingsAppsLoad,
+// SettingsAboutText; checked by --settings-apps-test).
+enum { kIdRadio = 100, kIdIdle = 110, kIdMemory = 111, kIdClip = 112, kIdState = 113, kIdTurnOff = 114, kIdMic = 115, kIdScaleApps = 116, kIdScaleDesktop = 117, kIdDesktopWindow = 118, kIdAppList = 119, kIdAppOpen = 120,
+       kIdAppUninstall = 121, kIdAppRefresh = 122, kIdAbout = 123, kIdSave = IDOK, kIdClose = IDCANCEL };
 static const wchar_t* const kLifecycleLabels[] = {
     L"Continuous — the subsystem runs from sign-in and is always ready",
     L"As needed — starts with an app, turns off when no app is open",
@@ -5796,6 +5798,102 @@ static bool SettingsSave(HWND w)
     return ok && !rc;
 }
 
+// The running client's command port (g_port + 10, local only): one line in, the answer until the client closes.
+// Empty when no client listens (the subsystem is off).
+static std::string CommandPortAsk(const std::string& line)
+{
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    SOCKET c = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    DWORD timeout = 3000;
+    setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof timeout);
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_port = htons(g_port + 10);
+    std::string answer;
+    if (!connect(c, (sockaddr*)&a, sizeof a))
+    {
+        const std::string out = line + "\n";
+        send(c, out.data(), (int)out.size(), 0);
+        char buf[4096];
+        for (int n; (n = recv(c, buf, sizeof buf, 0)) > 0;) answer.append(buf, n);
+    }
+    closesocket(c);
+    return answer;
+}
+
+// "Android apps", as WSA's "Apps" section: the host's app list (the guest's Apps channel, what the shortcuts in apps\
+// come from), open and uninstall through the client. The list reads the command port's "apps": "<package> launchable
+// <label>" or "<package> - <label>".
+struct SettingsApp { std::string package; bool launchable; };
+static std::vector<SettingsApp> g_settingsApps;
+
+static void SettingsAppsLoad(HWND w)
+{
+    HWND list = GetDlgItem(w, kIdAppList);
+    ListBox_ResetContent(list);
+    g_settingsApps.clear();
+    std::istringstream in(CommandPortAsk("apps"));
+    for (std::string line; std::getline(in, line);)
+    {
+        std::istringstream l(line);
+        std::string package, kind, label;
+        if (!(l >> package >> kind) || package == "no") continue;
+        std::getline(l >> std::ws, label);
+        g_settingsApps.push_back({package, kind == "launchable"});
+        SendMessageW(list, LB_ADDSTRING, 0, (LPARAM)Widen((label.empty() ? package : label) + "  (" + package + ")").c_str());
+    }
+    if (g_settingsApps.empty())
+        SendMessageW(list, LB_ADDSTRING, 0, (LPARAM)(VmHalfRunning() ? L"No apps yet: the list comes from Android a few seconds after it starts." : L"The subsystem is off: start an app or the client to see the list."));
+    EnableWindow(GetDlgItem(w, kIdAppOpen), FALSE);
+    EnableWindow(GetDlgItem(w, kIdAppUninstall), FALSE);
+}
+
+static const SettingsApp* SettingsAppSelected(HWND w)
+{
+    const int i = ListBox_GetCurSel(GetDlgItem(w, kIdAppList));
+    return i >= 0 && i < (int)g_settingsApps.size() ? &g_settingsApps[i] : nullptr;
+}
+
+static void SettingsAppOpen(HWND w)
+{
+    const SettingsApp* app = SettingsAppSelected(w);
+    if (!app || !app->launchable) return;
+    // "--launch" as the shortcuts do: it starts the client when the subsystem is off and waits for the guest.
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    std::wstring cmd = L"\"" + std::wstring(self) + L"\" --launch " + Widen(app->package);
+    STARTUPINFOW si{sizeof si};
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, ExeDir().c_str(), &si, &pi))
+        CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
+    else SettingsMessage(w, L"Cannot start the app.", MB_ICONERROR);
+}
+
+static void SettingsAppUninstall(HWND w)
+{
+    const SettingsApp* app = SettingsAppSelected(w);
+    if (!app) return;
+    const std::wstring question = L"Uninstall " + Widen(app->package) + L" from Android? Its data is removed too.";
+    if (!g_settingsTest && MessageBoxW(w, question.c_str(), L"Settings", MB_ICONQUESTION | MB_OKCANCEL) != IDOK) return;
+    const std::string answer = CommandPortAsk("uninstall " + app->package);
+    if (answer.rfind("ok", 0) != 0) SettingsMessage(w, answer.empty() ? L"The subsystem is off." : Widen(answer).c_str(), MB_ICONERROR);
+    SetTimer(w, 2, 3000, nullptr);  // the guest removes the app and sends the new list in a second or two
+}
+
+// "About": the exe's build, the instance and its ports, the service. The guest's Android version is not in the RCM
+// protocol (WSA's own "About" shows only the subsystem's version as well).
+static std::wstring SettingsAboutText()
+{
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    wchar_t text[1024];
+    swprintf_s(text, L"WSA-Reborn host, built %hs %hs\n%ls\nInstance %ls: adb port %u, command port %u, service %ls",
+               __DATE__, __TIME__, self, g_instance.empty() ? L"(default)" : g_instance.c_str(), g_port, g_port + 10, g_svcName.c_str());
+    return text;
+}
+
 static void SettingsState(HWND w)
 {
     const bool running = VmHalfRunning(), service = ServicePid() != 0;
@@ -5814,9 +5912,24 @@ static LRESULT CALLBACK SettingsProc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
         case kIdSave: if (SettingsSave(w)) SettingsLoad(w); return 0;
         case kIdClose: DestroyWindow(w); return 0;
         case kIdTurnOff: StopService(); SettingsState(w); return 0;
+        case kIdAppRefresh: SettingsAppsLoad(w); return 0;
+        case kIdAppOpen: SettingsAppOpen(w); return 0;
+        case kIdAppUninstall: SettingsAppUninstall(w); return 0;
+        case kIdAppList:
+            if (HIWORD(wp) == LBN_SELCHANGE)
+            {
+                const SettingsApp* app = SettingsAppSelected(w);
+                EnableWindow(GetDlgItem(w, kIdAppOpen), app && app->launchable);
+                EnableWindow(GetDlgItem(w, kIdAppUninstall), app != nullptr);
+            }
+            else if (HIWORD(wp) == LBN_DBLCLK) SettingsAppOpen(w);
+            return 0;
         }
         break;
-    case WM_TIMER: SettingsState(w); return 0;
+    case WM_TIMER:
+        if (wp == 2) { KillTimer(w, 2); SettingsAppsLoad(w); return 0; }
+        SettingsState(w);
+        return 0;
     case WM_CLOSE: DestroyWindow(w); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     }
@@ -5840,7 +5953,7 @@ static HWND SettingsCreate(bool visible)
     static const std::wstring cls = Inst(L"WsaRebornHostSettings");
     wc.lpszClassName = cls.c_str();
     RegisterClassW(&wc);
-    RECT r{0, 0, px(520), px(494)};
+    RECT r{0, 0, px(520), px(780)};
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRectExForDpi(&r, style, FALSE, 0, dpi);
     HWND w = CreateWindowExW(0, wc.lpszClassName, L"WSA-Reborn host — settings", style, CW_USEDEFAULT, CW_USEDEFAULT,
@@ -5877,10 +5990,18 @@ static HWND SettingsCreate(bool visible)
     add(L"BUTTON", L"Show the whole display's window at start (the tray icon shows it too)", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 334, 496, 24, kIdDesktopWindow);
     add(L"STATIC", L"", SS_LEFT, 12, 376, 340, 20, kIdState);
     add(L"BUTTON", L"Turn off", BS_PUSHBUTTON | WS_TABSTOP, 360, 370, 148, 30, kIdTurnOff);
-    add(L"STATIC", L"Saved settings apply to a running client within seconds.", SS_LEFT, 12, 420, 496, 20, -1);
-    add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON | WS_TABSTOP, 252, 452, 124, 30, kIdSave);
-    add(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, 384, 452, 124, 30, kIdClose);
+    add(L"BUTTON", L"Android apps", BS_GROUPBOX, 12, 412, 496, 210, -1);
+    add(L"LISTBOX", L"", LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_BORDER | WS_TABSTOP, 24, 434, 472, 140, kIdAppList);
+    add(L"BUTTON", L"Open", BS_PUSHBUTTON | WS_TABSTOP, 24, 582, 124, 28, kIdAppOpen);
+    add(L"BUTTON", L"Uninstall", BS_PUSHBUTTON | WS_TABSTOP, 156, 582, 124, 28, kIdAppUninstall);
+    add(L"BUTTON", L"Refresh", BS_PUSHBUTTON | WS_TABSTOP, 372, 582, 124, 28, kIdAppRefresh);
+    add(L"BUTTON", L"About", BS_GROUPBOX, 12, 630, 496, 76, -1);
+    add(L"STATIC", SettingsAboutText().c_str(), SS_LEFT, 24, 650, 472, 50, kIdAbout);
+    add(L"STATIC", L"Saved settings apply to a running client within seconds.", SS_LEFT, 12, 716, 496, 20, -1);
+    add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON | WS_TABSTOP, 252, 740, 124, 30, kIdSave);
+    add(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, 384, 740, 124, 30, kIdClose);
     SettingsLoad(w);
+    SettingsAppsLoad(w);
     SettingsState(w);
     SetTimer(w, 1, 2000, nullptr);
     if (visible) ShowWindow(w, SW_SHOWNORMAL);
@@ -5942,6 +6063,45 @@ static int SettingsTest(int argc, wchar_t** argv)
     return 0;
 }
 
+// "--settings-apps-test [uninstall <package>]": the settings window hidden, its "Android apps" and "About" printed
+// (the list from the running client); with "uninstall", the package is selected and Uninstall pressed (no question in
+// the test), and the list printed again once the guest has sent it. 28.10.2026.
+static int SettingsAppsTest(int argc, wchar_t** argv)
+{
+    g_settingsTest = true;
+    HWND w = SettingsCreate(false);
+    auto show = [&](const char* when) {
+        HWND list = GetDlgItem(w, kIdAppList);
+        std::printf("%s: %d apps\n", when, (int)g_settingsApps.size());
+        for (int i = 0; i < ListBox_GetCount(list); i++)
+        {
+            wchar_t item[512];
+            SendMessageW(list, LB_GETTEXT, i, (LPARAM)item);
+            std::printf("  %s%s\n", Narrow(item).c_str(), i < (int)g_settingsApps.size() && g_settingsApps[i].launchable ? " [open]" : "");
+        }
+    };
+    wchar_t about[1024];
+    GetDlgItemTextW(w, kIdAbout, about, 1024);
+    std::printf("about:\n%s\n", Narrow(about).c_str());
+    show("loaded");
+    if (argc > 3 && !wcscmp(argv[2], L"uninstall"))
+    {
+        const std::string package = Narrow(argv[3]);
+        int i = 0;
+        while (i < (int)g_settingsApps.size() && g_settingsApps[i].package != package) i++;
+        if (i == (int)g_settingsApps.size()) { std::printf("%s is not in the list\n", package.c_str()); return 1; }
+        ListBox_SetCurSel(GetDlgItem(w, kIdAppList), i);
+        SendMessageW(w, WM_COMMAND, MAKEWPARAM(kIdAppList, LBN_SELCHANGE), (LPARAM)GetDlgItem(w, kIdAppList));
+        std::printf("Uninstall %s\n", IsWindowEnabled(GetDlgItem(w, kIdAppUninstall)) ? "enabled" : "disabled");
+        SendMessageW(w, WM_COMMAND, MAKEWPARAM(kIdAppUninstall, BN_CLICKED), 0);
+        for (ULONGLONG start = GetTickCount64(); GetTickCount64() - start < 5000;)
+            for (MSG m; PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE);) DispatchMessageW(&m);
+        show("after uninstall");
+    }
+    DestroyWindow(w);
+    return 0;
+}
+
 // "instance" and "port" of shares.txt in <dir> (see g_instance), before anything that uses the names: the host folder
 // for the agent, the client and --install <folder>; for the service its Program Files folder, where --install copied it.
 static void ReadInstance(const std::wstring& dir)
@@ -5991,6 +6151,7 @@ int wmain(int argc, wchar_t** argv)
     if (argc == 3 && !wcscmp(argv[1], L"--lifecycle")) return SetLifecycle(argv[2]);
     if (argc == 2 && !wcscmp(argv[1], L"--settings")) return SettingsWindow();
     if (argc >= 2 && !wcscmp(argv[1], L"--settings-test")) return SettingsTest(argc, argv);
+    if (argc >= 2 && !wcscmp(argv[1], L"--settings-apps-test")) return SettingsAppsTest(argc, argv);
     if (argc == 2 && !wcscmp(argv[1], L"--networks")) return ListNetworks();
     if (argc >= 3 && !wcscmp(argv[1], L"--gfxstream-test")) return GfxstreamTest(argv[2], argc > 3 ? std::wcstoull(argv[3], nullptr, 16) : 0x11);
     if (argc >= 4 && !wcscmp(argv[1], L"--config"))

@@ -18,5 +18,7 @@ vs=${VS_BUILD:-$(wslpath "$("$vswhere" -latest -requires Microsoft.VisualStudio.
 cd "$out"
 printf '@call "%s\\vcvars64.bat" >nul\r\ncl /nologo /utf-8 /EHsc /std:c++20 /O2 /W3 wsa-reborn-host.cpp\r\n' "$(wslpath -w "$vs")" > build.bat
 rm -f wsa-reborn-host.exe
-cmd.exe /c build.bat | tr -d '\r' | grep -v '^wsa-reborn-host.cpp$' || true
-[ -f wsa-reborn-host.exe ] && wslpath -w "$out"
+# The messages are in the console's code page (cp866 on a Russian Windows): -a, or grep calls them binary and hides them.
+cmd.exe /c build.bat | tr -d '\r' | iconv -f cp866 -t utf-8 -c | grep -av '^wsa-reborn-host.cpp$' || true
+[ -f wsa-reborn-host.exe ] || { echo "no wsa-reborn-host.exe: the build failed (errors above)" >&2; exit 1; }
+wslpath -w "$out"
