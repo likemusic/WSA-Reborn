@@ -956,16 +956,19 @@ static std::mutex g_latteLock;
 static std::map<void*, std::pair<HANDLE, UINT64>> g_latte;  // view -> section, size
 // The media device's memory (AddressSpaceHostMediaContext::allocatePages, 0x2001 pages) is mapped by the guest too, as
 // /mnt/shared_mem/gralloc_<n> (WsaClient: WSL\<vm>\latte\gralloc_<n>): such a section gets a name in the shared_mem
-// share's directory. Which <n> the guest opens is not known yet — the first media section is gralloc_0 (28.10.2026).
+// share's directory. The guest takes <n> from the answer to its first ping (physical address minus offset), and gfxstream
+// answers zeros there: it always opens gralloc_0. Numbering the sections per connection broke the second one — after
+// media.codec restarted, the guest's open failed and Microsoft's plugin crashed on the null it got (29.10.2026). So the
+// name is always gralloc_0; while the previous connection's section lives, the name gives that one back.
 static const UINT64 kLatteMediaSize = 0x2001ull << 12;
-static std::atomic<unsigned> g_latteMediaSections{0};
 static HANDLE g_latteMediaLast;  // the newest media section (LatteOpen); under g_latteLock
 static void* LatteAlloc(UINT64 size)
 {
     std::wstring name;
-    if (size == kLatteMediaSize) name = std::wstring(L"Local\\WSL\\") + kVmId + L"\\shared_mem\\gralloc_" + std::to_wstring(g_latteMediaSections++);
+    if (size == kLatteMediaSize) name = std::wstring(L"Local\\WSL\\") + kVmId + L"\\shared_mem\\gralloc_0";
     HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, (DWORD)(size >> 32), (DWORD)size, name.empty() ? nullptr : name.c_str());
-    if (!name.empty()) std::printf("latte: media section %ls: %s\n", name.c_str(), sec ? "ok" : std::to_string(GetLastError()).c_str());
+    DWORD err = GetLastError();
+    if (!name.empty()) std::printf("latte: media section %ls: %s\n", name.c_str(), !sec ? std::to_string(err).c_str() : err == ERROR_ALREADY_EXISTS ? "ok, the existing one" : "ok");
     void* p = sec ? MapViewOfFile(sec, FILE_MAP_ALL_ACCESS, 0, 0, (SIZE_T)size) : nullptr;
     if (!p) { std::printf("latte: alloc %llu failed: %lu\n", size, GetLastError()); if (sec) CloseHandle(sec); return nullptr; }
     std::lock_guard<std::mutex> l(g_latteLock);

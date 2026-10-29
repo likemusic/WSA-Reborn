@@ -3,6 +3,8 @@ package org.wsalineage.decodetest;
 import android.app.Activity;
 import android.graphics.SurfaceTexture;
 import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaCodecList;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.os.Bundle;
@@ -17,7 +19,8 @@ import android.view.SurfaceView;
  * system's choice for the track's type) and logs "RESULT codec=... frames=... ms=..." or "FAILED ...". The output goes to
  * an offscreen SurfaceTexture (Latte decodes into Android native buffers only); the frames are dropped, not rendered.
  * With extra "show" (boolean) the frames go to a full-window SurfaceView at their presentation times instead, and
- * "SHOWING frame=..." is logged at frame 150, for a screenshot of the decoded picture (29.10.2026).
+ * "SHOWING frame=..." is logged at frame 150, for a screenshot of the decoded picture (29.10.2026). With extra "list"
+ * (boolean) it logs every decoder of MediaCodecList instead ("CODEC ...").
  */
 public class MainActivity extends Activity {
     private static final String TAG = "DecodeTest";
@@ -28,6 +31,16 @@ public class MainActivity extends Activity {
         String file = getIntent().getStringExtra("file");
         String codec = getIntent().getStringExtra("codec");
         String path = file != null ? file : "/data/local/tmp/test.mp4";
+        if (getIntent().getBooleanExtra("list", false)) {
+            // Every decoder of MediaCodecList.ALL_CODECS: "CODEC <name> <types> hw=<bool> sw=<bool> alias=<bool>".
+            for (MediaCodecInfo i : new MediaCodecList(MediaCodecList.ALL_CODECS).getCodecInfos())
+                if (!i.isEncoder())
+                    Log.i(TAG, "CODEC " + i.getName() + " " + String.join(",", i.getSupportedTypes()) + " hw=" + i.isHardwareAccelerated()
+                            + " sw=" + i.isSoftwareOnly() + " alias=" + i.isAlias());
+            Log.i(TAG, "RESULT list");
+            finish();
+            return;
+        }
         if (!getIntent().getBooleanExtra("show", false)) {
             start(path, codec, null);
             return;
