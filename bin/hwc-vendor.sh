@@ -11,7 +11,7 @@
 #       /mnt/c/Users/you/AppData/Local/Temp/wsa-reborn-host-6/vendor-gpu.vhdx
 #
 # Same file path and SELinux label as Microsoft's (bin/patch-system-file.sh); vendor_sepolicy.cil gets the vsock rule of
-# the frame sink (bin/headless-vendor.sh has the same). 16.10.2026. With qemu.hw.mainkeys=0 since 27.10.2026; Microsoft's OMX plugin (Latte) stays since 29.10.2026 (LATTE=0 removes it), with the MPEG-4 Part 2 role fixed and VP9's codec-config buffer dropped.
+# the frame sink (bin/headless-vendor.sh has the same). 16.10.2026. With qemu.hw.mainkeys=0 since 27.10.2026; Microsoft's OMX plugin (Latte) stays since 29.10.2026 (LATTE=0 removes it), with the MPEG-4 Part 2 role fixed, VP9's codec-config buffer dropped and Codec2 on beside it (ccodec=4).
 set -euo pipefail
 src=${1:?vendor.vhdx} hwc=${2:?hwcomposer .so} out=${3:?out vhdx}
 here=$(cd "$(dirname "$0")" && pwd); P=$here/patch-system-file.sh
@@ -39,9 +39,13 @@ if [ "${LATTE:-1}" = 0 ]; then
 else
     # The plugin's MPEG-4 Part 2 component has the role "video_decoder.mp4v" instead of "video_decoder.mpeg4", and
     # Android drops it: no MPEG-4 decoder at all (29.10.2026, bin/latte-mpeg4-role.py).
+    # It also lists its components only with debug.stagefright.ccodec=0, which turns Codec2 off: no c2.android.*
+    # software codecs. Without that check and with ccodec=4 the list is mixed, Latte first (bin/latte-ccodec.py).
     for f in /lib/libstagefrighthw.so /lib64/libstagefrighthw.so; do
         debugfs -R "cat $f" "$w/vendor.img" 2>/dev/null > "$w/sfhw.so"
-        if "$here/latte-mpeg4-role.py" "$w/sfhw.so" "$w/sfhw-role.so"; then q "$f" "$w/sfhw-role.so"; fi
+        if "$here/latte-mpeg4-role.py" "$w/sfhw.so" "$w/sfhw-role.so"; then cp "$w/sfhw-role.so" "$w/sfhw.so"; fi
+        if "$here/latte-ccodec.py" "$w/sfhw.so" "$w/sfhw-c2.so"; then cp "$w/sfhw-c2.so" "$w/sfhw.so"; fi
+        q "$f" "$w/sfhw.so"
     done
     # Its VP9 component sends the codec-config buffer of Android 15+ (csd-0 from WebM/MP4) to the host decoder like a
     # frame, which then holds 128 frames: dropped as AOSP's VP9 decoders do (29.10.2026, bin/latte-vp9-csd.py; only the
@@ -54,7 +58,9 @@ fi
 # makes DisplayPolicy report one; with the taskbar SystemUI adds no navigation bar of its own, so A16 and A17 both get just
 # the taskbar (27.10.2026).
 debugfs -R "cat /build.prop" "$w/vendor.img" 2>/dev/null > "$w/build.prop"
-grep -q '^qemu.hw.mainkeys=' "$w/build.prop" || { printf 'qemu.hw.mainkeys=0\n' >> "$w/build.prop"; q /build.prop "$w/build.prop"; }
+grep -q '^qemu.hw.mainkeys=' "$w/build.prop" || printf 'qemu.hw.mainkeys=0\n' >> "$w/build.prop"
+[ "${LATTE:-1}" = 0 ] || sed -i 's/^debug.stagefright.ccodec=0$/debug.stagefright.ccodec=4/' "$w/build.prop"
+q /build.prop "$w/build.prop"
 e2fsck -fn "$w/vendor.img" >/dev/null
 md5sum "$w/vendor.img" | sed "s|$w/||"
 qemu-img convert -f raw -O vhdx -o subformat=dynamic "$w/vendor.img" "$out"
