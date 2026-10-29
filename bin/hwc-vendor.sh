@@ -11,7 +11,7 @@
 #       /mnt/c/Users/you/AppData/Local/Temp/wsa-reborn-host-6/vendor-gpu.vhdx
 #
 # Same file path and SELinux label as Microsoft's (bin/patch-system-file.sh); vendor_sepolicy.cil gets the vsock rule of
-# the frame sink (bin/headless-vendor.sh has the same). 16.10.2026. Without Microsoft's OMX plugin (Latte) and with qemu.hw.mainkeys=0 since 27.10.2026.
+# the frame sink (bin/headless-vendor.sh has the same). 16.10.2026. With qemu.hw.mainkeys=0 since 27.10.2026; Microsoft's OMX plugin (Latte) stays since 29.10.2026 (LATTE=0 removes it).
 set -euo pipefail
 src=${1:?vendor.vhdx} hwc=${2:?hwcomposer .so} out=${3:?out vhdx}
 here=$(cd "$(dirname "$0")" && pwd); P=$here/patch-system-file.sh
@@ -29,10 +29,14 @@ grep -q 'vsock_socket (create connect getopt setopt)' "$w/vendor_sepolicy.cil" |
 # Microsoft's OMX plugin (Latte, /lib/libstagefrighthw.so) asks WsaClient's media service over vsock at the start of
 # media.codec and waits for an answer forever: IOmxStore never registers, mediaserver waits for it, and so does
 # StorageManagerService (handleSystemReady -> MediaCodecList) — emulated;0 never mounts, no /sdcard, Settings > Storage
-# crashes on external_primary (27.10.2026). Without the plugin OMXStore registers with the software codecs only.
-for f in /lib/libstagefrighthw.so /lib64/libstagefrighthw.so; do
-    debugfs -R "stat $f" "$w/vendor.img" 2>/dev/null | grep -q Inode: && debugfs -w -R "rm $f" "$w/vendor.img" >/dev/null 2>&1 && echo "removed: $f"
-done
+# crashes on external_primary (27.10.2026). The own host answers it since 28-29.10.2026 (its media channel,
+# docs/own-host.md), so the plugin stays; LATTE=0 removes it for a host without the channel, and then OMXStore
+# registers with the software codecs only.
+if [ "${LATTE:-1}" = 0 ]; then
+    for f in /lib/libstagefrighthw.so /lib64/libstagefrighthw.so; do
+        debugfs -R "stat $f" "$w/vendor.img" 2>/dev/null | grep -q Inode: && debugfs -w -R "rm $f" "$w/vendor.img" >/dev/null 2>&1 && echo "removed: $f"
+    done
+fi
 # WSA's config_showNavigationBar is false, and Launcher3 of Android 17 creates its taskbar only on a display with a
 # navigation bar (Android 16 does not ask): no taskbar in the one-window mode (scale_desktop resize). qemu.hw.mainkeys=0
 # makes DisplayPolicy report one; with the taskbar SystemUI adds no navigation bar of its own, so A16 and A17 both get just

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Decodes a video file with MediaCodec onto an offscreen SurfaceTexture and writes the codec, the frame count and the
+     time to logcat: does the Latte hardware decoder (OMX.android.latte.*, docs/own-host.md) decode on the own host?
+     28.10.2026. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.wsalineage.decodetest">
+    <application android:label="DecodeTest" android:allowBackup="false" android:requestLegacyExternalStorage="true">
+        <activity android:name=".MainActivity" android:exported="true" android:label="DecodeTest">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

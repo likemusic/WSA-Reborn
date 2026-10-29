@@ -150,6 +150,15 @@ The host can give the VM its own virtio-gpu (a PCI device emulated through the d
 
 Frames and task windows then arrive exactly as with the software vendor; an app reports `GL_VENDOR=Microsoft, GL_RENDERER=Subsystem OpenGL ES Translator` (OpenGL ES 3.0), `testapps/vkprobe` lists your GPU with Vulkan 1.3. The composer reads every frame back from the GPU (`TRANSFER_FROM_HOST` of virtio-gpu), which costs a copy per frame — fine for apps and tests, not tuned for games. Fenced commands are answered when the renderer reports them done, as crosvm does (`nofences` on the `hdv` line answers at once, as `WsaClient` does). `testapps/ahbinfo` prints what a gralloc buffer of this stack looks like. So far tested from the agent (development mode), not from the service.
 
+
+### Hardware video decoding (Latte)
+
+Stock WSA decodes video on the Windows side: Microsoft's OMX plugin in `vendor.vhdx` (`libstagefrighthw.so`, codecs `OMX.android.latte.*`) speaks the media device protocol of the Android emulator (48-byte `address_space_ping` messages) over the gskserver socket, port 22470, and `gfxstream_backend.dll` decodes with Media Foundation (`WSACodecs.dll`) into the renderer's buffers. With the hardware graphics above, the host answers that socket in the renderer process (`gfxstream_backend_create_channel` / `channel_op`), names the 32 MiB media section `gralloc_<n>` in the guest's `shared_mem` and hands gfxstream a D3D11 device (`gfxstream_set_d3d_device`), so `bin/hwc-vendor.sh` keeps the plugin (`LATTE=0` removes it for a host without the channel: without an answer `media.codec` waits forever, and with it the storage service, so `/sdcard` never mounts).
+
+Checked on Android 16 and 17 with `testapps/DecodeTest` (`MediaCodec`; `--ez show true` puts the frames on screen): H.264, HEVC, VP8, AV1 and H.263 decode in full; VP9 stops after 22 of 150 frames and MPEG-4 Part 2 finds no decoder — open. Microsoft's codec list names only the Latte decoders for video.
+
+That D3D11 device is shared: gfxstream also builds ANGLE's display on it (`eglCreateDeviceANGLE`), and the decoder thread releases its shared textures on it while the GL threads render. It must be multithread protected (`ID3D10Multithread::SetMultithreadProtected(TRUE)`, as `WsaClient` does), and the host always protects it; `media_mt off` in `settings.txt` leaves it unprotected, only to reproduce the race. Unprotected, the renderer crashed in the AMD D3D11 driver within a few hundred frames, and once Windows bugchecked (`0x119 VIDEO_SCHEDULER_INTERNAL_ERROR`, the kernel driver reported an invalid fence). `host/repro/d3d11-mt-race` reproduces the user-mode side in a second without WSA; it was reported to AMD.
+
 ## Several Android versions at once
 
 Two copies of stock WSA cannot run together (both clients activate the same COM class), but own hosts can: each is a folder of its own with these lines in its `shares.txt`:

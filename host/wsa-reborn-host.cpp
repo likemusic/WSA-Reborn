@@ -57,6 +57,9 @@
 #include <shlwapi.h>
 #include <winternl.h>
 #include <gdiplus.h>
+#include <d3d11.h>
+#include <d3d10.h>
+#include <dbghelp.h>
 #include <sddl.h>
 #include <aclapi.h>
 #include <wtsapi32.h>
@@ -94,6 +97,8 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "uuid.lib")
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dbghelp.lib")
 #pragma comment(lib, "windowsapp.lib")
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "wtsapi32.lib")
@@ -949,13 +954,23 @@ static GfxstreamApi g_gfx;
 struct LatteOps { void* (*alloc)(UINT64); void (*free)(void*); void (*open)(UINT64, UINT64, HANDLE*); };
 static std::mutex g_latteLock;
 static std::map<void*, std::pair<HANDLE, UINT64>> g_latte;  // view -> section, size
+// The media device's memory (AddressSpaceHostMediaContext::allocatePages, 0x2001 pages) is mapped by the guest too, as
+// /mnt/shared_mem/gralloc_<n> (WsaClient: WSL\<vm>\latte\gralloc_<n>): such a section gets a name in the shared_mem
+// share's directory. Which <n> the guest opens is not known yet — the first media section is gralloc_0 (28.10.2026).
+static const UINT64 kLatteMediaSize = 0x2001ull << 12;
+static std::atomic<unsigned> g_latteMediaSections{0};
+static HANDLE g_latteMediaLast;  // the newest media section (LatteOpen); under g_latteLock
 static void* LatteAlloc(UINT64 size)
 {
-    HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, (DWORD)(size >> 32), (DWORD)size, nullptr);
+    std::wstring name;
+    if (size == kLatteMediaSize) name = std::wstring(L"Local\\WSL\\") + kVmId + L"\\shared_mem\\gralloc_" + std::to_wstring(g_latteMediaSections++);
+    HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, (DWORD)(size >> 32), (DWORD)size, name.empty() ? nullptr : name.c_str());
+    if (!name.empty()) std::printf("latte: media section %ls: %s\n", name.c_str(), sec ? "ok" : std::to_string(GetLastError()).c_str());
     void* p = sec ? MapViewOfFile(sec, FILE_MAP_ALL_ACCESS, 0, 0, (SIZE_T)size) : nullptr;
     if (!p) { std::printf("latte: alloc %llu failed: %lu\n", size, GetLastError()); if (sec) CloseHandle(sec); return nullptr; }
     std::lock_guard<std::mutex> l(g_latteLock);
     g_latte[p] = {sec, size};
+    if (!name.empty()) g_latteMediaLast = sec;
     return p;
 }
 static void LatteFree(void* p)
@@ -964,13 +979,22 @@ static void LatteFree(void* p)
     auto it = g_latte.find(p);
     if (it == g_latte.end()) return;
     UnmapViewOfFile(p);
+    if (it->second.first == g_latteMediaLast) g_latteMediaLast = nullptr;
     CloseHandle(it->second.first);
     g_latte.erase(it);
 }
+// The media context asks it right after allocatePages: open(0, 0x2001000, &section) — the section of the block it has
+// just allocated (an assert in gfxstream_backend.dll when the answer is null, 28.10.2026). The newest media section
+// goes back, duplicated: who closes it is not known.
 static void LatteOpen(UINT64 a, UINT64 b, HANDLE* out)
 {
-    std::printf("latte: open %llu %llu — not supported\n", a, b);
     *out = nullptr;
+    {
+        std::lock_guard<std::mutex> l(g_latteLock);
+        if (b == kLatteMediaSize) *out = g_latteMediaLast;
+    }
+    if (*out && !DuplicateHandle(GetCurrentProcess(), *out, GetCurrentProcess(), out, 0, FALSE, DUPLICATE_SAME_ACCESS)) *out = nullptr;
+    std::printf("latte: open %llu %llu -> %p\n", a, b, *out);
 }
 // The section and offset that hold a host pointer of the renderer.
 static HANDLE LatteSection(void* p, UINT64* offset)
@@ -1032,9 +1056,27 @@ static void GfxstreamFence(void*, stream_renderer_fence* f)
     HdvGpuKickFences();
 }
 
+// The last TRANSFER_TO/FROM_HOST_3D and the 3D resources' format, bind and size, for the crash report below: the
+// amdxx64.dll crash under the media device is in a TRANSFER_FROM_HOST_3D (ANGLE glReadPixels, 29.10.2026).
+struct GfxLastTransfer { UINT32 type, res, ctx, x, y, w, h; UINT64 tick; };
+struct GfxResourceInfo { UINT32 format, bind, width, height; };
+static std::mutex g_gfxLastLock;
+static GfxLastTransfer g_gfxLastTransfer{};
+static std::map<UINT32, GfxResourceInfo> g_gfxResources;
+
 // A crash inside the renderer: module and offset of the faulting address, for the disassembler.
 static LONG WINAPI GfxstreamCrash(EXCEPTION_POINTERS* e)
 {
+    {
+        // No lock: the crashing thread may hold it.
+        const GfxLastTransfer& t = g_gfxLastTransfer;
+        auto it = g_gfxResources.find(t.res);
+        std::printf("CRASH: last transfer 0x%04x resource %u ctx %u box %u,%u %ux%u, %llu ms ago", t.type, t.res, t.ctx, t.x, t.y, t.w, t.h,
+                    GetTickCount64() - t.tick);
+        if (it != g_gfxResources.end())
+            std::printf("; resource format %u bind 0x%x %ux%u", it->second.format, it->second.bind, it->second.width, it->second.height);
+        std::printf("\n");
+    }
     HMODULE m = nullptr;
     void* at = e->ExceptionRecord->ExceptionAddress;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)at, &m);
@@ -1054,12 +1096,57 @@ static LONG WINAPI GfxstreamCrash(EXCEPTION_POINTERS* e)
         std::printf("  stack +0x%x: %ls+0x%llx\n", i * 8, PathFindFileNameW(nm), (UINT64)(sp[i] - (UINT64)mm));
         shown++;
     }
+    // And a minidump next to the exe (hdvhost-crash.dmp, overwritten), for WinDbg: the stack inside the driver needs its
+    // unwind data, which the heuristic walk above does not have (28.10.2026, amdxx64.dll under the media device).
+    static std::atomic<bool> dumped{false};
+    if (!dumped.exchange(true))
+    {
+        wchar_t self[MAX_PATH];
+        GetModuleFileNameW(nullptr, self, MAX_PATH);
+        PathRemoveFileSpecW(self);
+        std::wstring path = std::wstring(self) + L"\\hdvhost-crash.dmp";
+        HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+        if (f != INVALID_HANDLE_VALUE)
+        {
+            MINIDUMP_EXCEPTION_INFORMATION mei = {GetCurrentThreadId(), e, FALSE};
+            BOOL ok = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f,
+                                        (MINIDUMP_TYPE)(MiniDumpWithDataSegs | MiniDumpWithThreadInfo | MiniDumpWithIndirectlyReferencedMemory |
+                                                        MiniDumpWithUnloadedModules | MiniDumpWithHandleData),
+                                        &mei, nullptr, nullptr);
+            CloseHandle(f);
+            std::printf("CRASH: minidump %ls: %s\n", path.c_str(), ok ? "written" : "failed");
+        }
+    }
     std::fflush(stdout);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+// The device given to gfxstream_set_d3d_device is ANGLE's too (gfxstream makes its display with eglCreateDeviceANGLE: 40
+// references after init) and Media Foundation's: the media channel's thread releases the decoder's shared textures
+// (DXGIReleaseSync -> Flush) while the GL threads use the immediate context. Unprotected, that races inside the AMD driver:
+// the renderer crashes in amdxx64.dll within a few hundred frames, once followed by a 0x119 VIDEO_SCHEDULER_INTERNAL_ERROR
+// bugcheck of Windows. WsaClient protects it (ID3D10Multithread::SetMultithreadProtected(TRUE) right after
+// D3D11CreateDevice, rva 0x150d76 of 2407.40000.4.0), and so do we; 13 of 13 decodes passed so (29.10.2026).
+// settings.txt "media_mt off" leaves it unprotected, to reproduce the race.
+static bool MediaMtSetting()
+{
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    PathRemoveFileSpecW(self);
+    std::ifstream f(std::wstring(self) + L"\\settings.txt");
+    for (std::string line; std::getline(f, line);)
+    {
+        std::istringstream in(line);
+        std::string key, value;
+        if ((in >> key >> value) && key == "media_mt") return value != "off";
+    }
+    return true;
+}
+
+static ID3D11Device* g_mediaD3d = nullptr;  // the device given to gfxstream_set_d3d_device, until stream_renderer_init returns
 static std::string g_hdvGpuVkIcd;               // "vkicd=<name|manifest.json>": the renderer's Vulkan driver, see GfxstreamInit
 
+static void GskMediaListen();
 static int GfxstreamInit(UINT64 flags)
 {
     SetUnhandledExceptionFilter(GfxstreamCrash);
@@ -1075,6 +1162,29 @@ static int GfxstreamInit(UINT64 flags)
             std::printf("gfxstream: %s=%s\n", name, g_hdvGpuVkIcd.c_str());
         }
     }
+    // The media device's MediaPlatform::Initialize takes the adapter of the D3D11 device the embedder gives it
+    // (gfxstream_set_d3d_device; WsaClient passes its compositor's): without one it fails with MF_E_NOT_INITIALIZED and the
+    // guest's decoders all report "not supported by host" (28.10.2026). The default adapter, as the renderer's.
+    if (auto setD3d = (void (*)(IUnknown*))GetProcAddress(g_gfx.dll, "gfxstream_set_d3d_device"))
+    {
+        ID3D11Device* dev = nullptr;
+        HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                       nullptr, 0, D3D11_SDK_VERSION, &dev, nullptr, nullptr);
+        std::printf("gfxstream: D3D11 device for the media platform: 0x%08lx\n", hr);
+        if (SUCCEEDED(hr) && MediaMtSetting())
+        {
+            ID3D10Multithread* mt = nullptr;
+            if (SUCCEEDED(dev->QueryInterface(__uuidof(ID3D10Multithread), (void**)&mt)))
+            {
+                mt->SetMultithreadProtected(TRUE);
+                mt->Release();
+                std::printf("gfxstream: media D3D11 device multithread protected\n");
+            }
+        }
+        else if (SUCCEEDED(hr))
+            std::printf("gfxstream: media D3D11 device NOT multithread protected (settings.txt media_mt off)\n");
+        if (SUCCEEDED(hr)) { setD3d(dev); g_mediaD3d = dev; }  // gfxstream_set_d3d_device takes its own reference; ours is dropped after init
+    }
     static LatteOps ops = {LatteAlloc, LatteFree, LatteOpen};
     auto setLatte = (void (*)(LatteOps*))GetProcAddress(g_gfx.dll, "gfxstream_set_latte_operations");
     if (setLatte) setLatte(&ops);
@@ -1082,6 +1192,16 @@ static int GfxstreamInit(UINT64 flags)
     stream_renderer_param p[] = {{2, flags}, {1, 0}, {3, (UINT64)(uintptr_t)&GfxstreamFence}, {4, 1}, {5, 1}};
     int r = g_gfx.init(p, 5);
     std::printf("gfxstream: stream_renderer_init flags 0x%llx: %d\n", flags, r);
+    if (g_mediaD3d)
+    {
+        // References to the device after init: more than ours and gfxstream's means the renderer (ANGLE, through
+        // eglCreateDeviceANGLE) took it as well, so the GL threads and Media Foundation share its immediate context.
+        g_mediaD3d->AddRef();
+        std::printf("gfxstream: media D3D11 device %p, references after init: %lu\n", (void*)g_mediaD3d, g_mediaD3d->Release() - 1);
+        g_mediaD3d->Release();
+        g_mediaD3d = nullptr;
+    }
+    if (r == 0 && g_runtimeId != GUID{}) GskMediaListen();
     return r;
 }
 
@@ -1483,6 +1603,10 @@ static bool HdvGpu3d(HdvGpu& d, UINT32 type, UINT32 ctx, const std::vector<BYTE>
     {
         GfxResourceArgs a{u32(24), u32(28), u32(32), u32(36), u32(40), u32(44), u32(48), u32(52), u32(56), u32(60), u32(64)};
         r = g_gfx.resource_create(&a, nullptr, 0);
+        {
+            std::lock_guard<std::mutex> l(g_gfxLastLock);
+            g_gfxResources[u32(24)] = {u32(32), u32(36), u32(40), u32(44)};
+        }
         break;
     }
     case 0x0102:  // RESOURCE_UNREF
@@ -1521,6 +1645,10 @@ static bool HdvGpu3d(HdvGpu& d, UINT32 type, UINT32 ctx, const std::vector<BYTE>
     {
         GfxBox b{u32(24), u32(28), u32(32), u32(36), u32(40), u32(44)};
         auto fn = type == 0x0205 ? g_gfx.transfer_write_iov : g_gfx.transfer_read_iov;
+        {
+            std::lock_guard<std::mutex> l(g_gfxLastLock);
+            g_gfxLastTransfer = {type, u32(56), ctx, b.x, b.y, b.w, b.h, GetTickCount64()};
+        }
         r = fn(u32(56), ctx, u32(60), u32(64), u32(68), &b, u64(48), nullptr, 0);
         break;
     }
@@ -1952,6 +2080,7 @@ static int HdvHostMain(const std::wstring& objref, const wchar_t* runtimeId)
     // The VM worker maps guest memory into this process (apertures answered E_HANDLE without it): its group and account
     // get access to the process, as "devicehost acl" grants for the service.
     if (runtimeId && SUCCEEDED(CLSIDFromString(runtimeId, &g_runtimeId))) ProcessAclForVm();
+    ReadSharesSettings();  // vmid: the shared_mem directory of the media sections (LatteAlloc)
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     CoInitializeSecurity(nullptr, -1, nullptr, nullptr, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_STATIC_CLOAKING, nullptr);
     if (SUCCEEDED(ClientHdvHost(objref))) { HdvParse(); HdvCreate(); }
@@ -4081,6 +4210,55 @@ static void RcmListen(unsigned port)
     }).detach();
 }
 
+// The guest's video decoders (Microsoft's OMX plugin libstagefrighthw.so, "Latte") reach the renderer's media device
+// through gskserver on hvsocket 22470: AEMU address-space pings of 48 bytes that WsaClient hands, as they are, to
+// gfxstream_backend_channel_op of a channel of their own (gfxstream_backend_create_channel per connection) and sends
+// back filled in. The decoder is in gfxstream_backend.dll (AddressSpaceHostMediaContext -> WSACodecs.dll, Media
+// Foundation), so this runs in the renderer's process; GuestSide leaves the port alone then. docs/own-host.md.
+// The first exchanges of each connection go to the log, request and answer. 28.10.2026.
+static bool SharesHaveGfxstream()
+{
+    std::ifstream f(ConfigFile(L"shares.txt"));
+    for (std::string line; std::getline(f, line);)
+        if (line.rfind("hdv gpu", 0) == 0 && line.find("gfxstream=") != std::string::npos) return true;
+    return false;
+}
+static void GskMediaListen()
+{
+    auto create = (UINT32 (*)())GetProcAddress(g_gfx.dll, "gfxstream_backend_create_channel");
+    auto op = (void (*)(UINT32, void*, UINT32))GetProcAddress(g_gfx.dll, "gfxstream_backend_channel_op");
+    auto close = (void (*)(UINT32))GetProcAddress(g_gfx.dll, "gfxstream_backend_close_channel");
+    if (!create || !op || !close) { std::printf("media: no gfxstream_backend channels in this gfxstream_backend.dll\n"); return; }
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    SOCKET l = socket(AF_HYPERV, SOCK_STREAM, HV_PROTOCOL_RAW);
+    SOCKADDR_HV hv{};
+    hv.Family = AF_HYPERV;
+    hv.VmId = g_runtimeId;
+    hv.ServiceId = VsockService(22470);
+    if (bind(l, (sockaddr*)&hv, sizeof hv) || listen(l, 16)) { std::printf("media: cannot listen on hvsocket 22470 (%d)\n", WSAGetLastError()); return; }
+    std::printf("media: listening on hvsocket 22470\n");
+    std::thread([=] {
+        for (SOCKET c; (c = accept(l, nullptr, nullptr)) != INVALID_SOCKET;)
+            std::thread([=] {
+                UINT32 h = create();
+                std::printf("media: connection, channel %u\n", h);
+                char ping[48];
+                unsigned n = 0;
+                for (; recv(c, ping, sizeof ping, MSG_WAITALL) == sizeof ping; n++)
+                {
+                    std::string in = n < 16 ? Hex(ping, sizeof ping) : "";
+                    op(h, ping, sizeof ping);
+                    if (n < 16) std::printf("media: channel %u #%u %s -> %s\n", h, n, in.c_str(), Hex(ping, sizeof ping).c_str());
+                    if (send(c, ping, sizeof ping, 0) != sizeof ping) break;
+                }
+                std::printf("media: channel %u closed after %u pings (%d)\n", h, n, WSAGetLastError());
+                close(h);
+                closesocket(c);
+            }).detach();
+    }).detach();
+}
+
 
 // Window mouse/keyboard -> UserInputMessage. Coordinates: client area -> guest display px (the frame is stretched to
 // the whole client area). Mouse goes as a real mouse (emulateTouch=false), targetTaskId=-1 for the display window (no
@@ -5064,7 +5242,7 @@ static void GuestSide(unsigned short port)
     RcmListen(35002);
     RcmListen(35034);
     RcmListen(22469);
-    RcmListen(22470);
+    if (!SharesHaveGfxstream()) RcmListen(22470);  // else the renderer's process serves it: GskMediaListen
     FrameListen();
     InputControl(port + 10);
 }
