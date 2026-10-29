@@ -73,19 +73,20 @@ public class MainActivity extends Activity {
         long start = SystemClock.elapsedRealtime();
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
         boolean inputDone = false;
-        int frames = 0;
+        int frames = 0, inputs = 0, firstAt = -1;
         while (true) {
             if (!inputDone) {
                 int in = c.dequeueInputBuffer(10000);
                 if (in >= 0) {
                     int n = ex.readSampleData(c.getInputBuffer(in), 0);
                     if (n < 0) { c.queueInputBuffer(in, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM); inputDone = true; }
-                    else { c.queueInputBuffer(in, 0, n, ex.getSampleTime(), 0); ex.advance(); }
+                    else { c.queueInputBuffer(in, 0, n, ex.getSampleTime(), 0); ex.advance(); inputs++; }
                 }
             }
             int out = c.dequeueOutputBuffer(info, 10000);
             if (out >= 0) {
                 if (info.size > 0 || (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) == 0) frames++;
+                if (frames == 1 && firstAt < 0) firstAt = inputs;
                 if (shown == null) {
                     c.releaseOutputBuffer(out, false);  // nobody consumes the SurfaceTexture: rendering would fill its queue
                 } else {
@@ -99,7 +100,7 @@ public class MainActivity extends Activity {
             if (SystemClock.elapsedRealtime() - start > 60000) throw new IllegalStateException("timeout after " + frames + " frames");
         }
         long ms = SystemClock.elapsedRealtime() - start;
-        Log.i(TAG, "RESULT codec=" + c.getName() + " frames=" + frames + " ms=" + ms);
+        Log.i(TAG, "RESULT codec=" + c.getName() + " frames=" + frames + " ms=" + ms + " inputs=" + inputs + " first_output_after=" + firstAt);
         c.stop();
         c.release();
         if (st != null) {
