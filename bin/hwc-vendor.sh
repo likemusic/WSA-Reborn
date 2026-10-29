@@ -11,7 +11,7 @@
 #       /mnt/c/Users/you/AppData/Local/Temp/wsa-reborn-host-6/vendor-gpu.vhdx
 #
 # Same file path and SELinux label as Microsoft's (bin/patch-system-file.sh); vendor_sepolicy.cil gets the vsock rule of
-# the frame sink (bin/headless-vendor.sh has the same). 16.10.2026. With qemu.hw.mainkeys=0 since 27.10.2026; Microsoft's OMX plugin (Latte) stays since 29.10.2026 (LATTE=0 removes it).
+# the frame sink (bin/headless-vendor.sh has the same). 16.10.2026. With qemu.hw.mainkeys=0 since 27.10.2026; Microsoft's OMX plugin (Latte) stays since 29.10.2026 (LATTE=0 removes it), with the MPEG-4 Part 2 role fixed.
 set -euo pipefail
 src=${1:?vendor.vhdx} hwc=${2:?hwcomposer .so} out=${3:?out vhdx}
 here=$(cd "$(dirname "$0")" && pwd); P=$here/patch-system-file.sh
@@ -35,6 +35,13 @@ grep -q 'vsock_socket (create connect getopt setopt)' "$w/vendor_sepolicy.cil" |
 if [ "${LATTE:-1}" = 0 ]; then
     for f in /lib/libstagefrighthw.so /lib64/libstagefrighthw.so; do
         debugfs -R "stat $f" "$w/vendor.img" 2>/dev/null | grep -q Inode: && debugfs -w -R "rm $f" "$w/vendor.img" >/dev/null 2>&1 && echo "removed: $f"
+    done
+else
+    # The plugin's MPEG-4 Part 2 component has the role "video_decoder.mp4v" instead of "video_decoder.mpeg4", and
+    # Android drops it: no MPEG-4 decoder at all (29.10.2026, bin/latte-mpeg4-role.py).
+    for f in /lib/libstagefrighthw.so /lib64/libstagefrighthw.so; do
+        debugfs -R "cat $f" "$w/vendor.img" 2>/dev/null > "$w/sfhw.so"
+        if "$here/latte-mpeg4-role.py" "$w/sfhw.so" "$w/sfhw-role.so"; then q "$f" "$w/sfhw-role.so"; fi
     done
 fi
 # WSA's config_showNavigationBar is false, and Launcher3 of Android 17 creates its taskbar only on a display with a

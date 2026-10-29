@@ -42,22 +42,22 @@ public class MainActivity extends Activity {
             return;
         }
         if (!getIntent().getBooleanExtra("show", false)) {
-            start(path, codec, null);
+            start(path, codec, null, getIntent().getBooleanExtra("nocsd", false));
             return;
         }
         SurfaceView view = new SurfaceView(this);
         setContentView(view);
         view.getHolder().addCallback(new SurfaceHolder.Callback() {
-            @Override public void surfaceCreated(SurfaceHolder h) { start(path, codec, h.getSurface()); }
+            @Override public void surfaceCreated(SurfaceHolder h) { start(path, codec, h.getSurface(), getIntent().getBooleanExtra("nocsd", false)); }
             @Override public void surfaceChanged(SurfaceHolder h, int format, int w, int hh) {}
             @Override public void surfaceDestroyed(SurfaceHolder h) {}
         });
     }
 
-    private void start(String path, String codec, Surface shown) {
+    private void start(String path, String codec, Surface shown, boolean noCsd) {
         new Thread(() -> {
             try {
-                decode(path, codec, shown);
+                decode(path, codec, shown, noCsd);
             } catch (Exception e) {
                 Log.e(TAG, "FAILED " + e, e);
             }
@@ -65,7 +65,8 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    private void decode(String path, String name, Surface shown) throws Exception {
+    // noCsd (--ez nocsd true): the format goes to the codec without csd-0/1/2, so no codec-config buffer is queued.
+    private void decode(String path, String name, Surface shown, boolean noCsd) throws Exception {
         MediaExtractor ex = new MediaExtractor();
         ex.setDataSource(path);
         int track = -1;
@@ -76,6 +77,9 @@ public class MainActivity extends Activity {
         }
         if (track < 0) throw new IllegalArgumentException("no video track in " + path);
         ex.selectTrack(track);
+        if (noCsd)
+            for (String k : new String[] {"csd-0", "csd-1", "csd-2"})
+                if (format.containsKey(k)) { Log.i(TAG, "dropping " + k + " (" + format.getByteBuffer(k).remaining() + " bytes)"); format.removeKey(k); }
         String mime = format.getString(MediaFormat.KEY_MIME);
         MediaCodec c = name != null ? MediaCodec.createByCodecName(name) : MediaCodec.createDecoderByType(mime);
         Log.i(TAG, "decoding " + path + " (" + mime + ", " + format.getInteger(MediaFormat.KEY_WIDTH) + "x" + format.getInteger(MediaFormat.KEY_HEIGHT) + ") with " + c.getName());

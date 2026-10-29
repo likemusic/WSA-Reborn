@@ -883,6 +883,30 @@ static HRESULT CALLBACK HdvTestWriteMmio(PVOID, HDV_PCI_BAR_SELECTOR bar, UINT64
     return S_OK;
 }
 
+// WSACodecs.dll (the decoders of the Latte media device, docs/own-host.md) builds MF_MT_FRAME_SIZE from the width
+// alone: mov eax,[rbx+0x10]; r8 = rax << 32 | rax — 1280x1280 for 1280x720 (handler: width at +0x10, height at +0x14).
+// Most Windows decoders take the size from the stream; MPEG-4 Part 2 ("Mpeg4s Decoder MFT", AMD's) checks it against
+// the VOL and outputs nothing: 0 of 150 frames, 150 of 150 with the right size (host/repro/mf-vp9-latency/mf-vp9-reader
+// --true-size, 29.10.2026). So in this process only, MP4VCodecHandler::CreateMediaType (rva 0x22199 of 2407.40000.4.0)
+// loads both halves at once and swaps them: mov r8,[rbx+0x10]; rol r8,32; mov rcx,[rbp-8]; nop5 — the same 17 bytes.
+// The file stays as it is; another build of the DLL, with other bytes there, is left alone.
+static void PatchWsaCodecsFrameSize(const std::wstring& dir)
+{
+    HMODULE m = GetModuleHandleW(L"WSACodecs.dll");
+    if (!m) m = LoadLibraryExW((dir + L"\\WSACodecs.dll").c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (!m) { std::printf("gfxstream: no WSACodecs.dll to patch (%lu)\n", GetLastError()); return; }
+    static const BYTE was[] = {0x8b, 0x43, 0x10, 0x48, 0x8b, 0x4d, 0xf8, 0x49, 0x89, 0xc0, 0x49, 0xc1, 0xe0, 0x20, 0x49, 0x09, 0xc0};
+    static const BYTE now[] = {0x4c, 0x8b, 0x43, 0x10, 0x49, 0xc1, 0xc0, 0x20, 0x48, 0x8b, 0x4d, 0xf8, 0x0f, 0x1f, 0x44, 0x00, 0x00};
+    BYTE* at = (BYTE*)m + 0x22199;
+    if (std::memcmp(at, was, sizeof was)) { std::printf("gfxstream: WSACodecs.dll MPEG-4 frame size: other bytes, not patched\n"); return; }
+    DWORD old;
+    if (!VirtualProtect(at, sizeof now, PAGE_EXECUTE_READWRITE, &old)) return;
+    std::memcpy(at, now, sizeof now);
+    VirtualProtect(at, sizeof now, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), at, sizeof now);
+    std::printf("gfxstream: WSACodecs.dll MPEG-4 frame size patched (width x height)\n");
+}
+
 // ---- gfxstream host backend (stream_renderer_* of gfxstream_backend.dll) ---------------------------------------
 // The API crosvm/rutabaga feed virtio-gpu 3D into (AOSP gfxstream, mid-2023 header
 // host/include/gfxstream/virtio-gpu-gfxstream-renderer.h); WSA's package ships it as gfxstream_backend.dll and WsaClient
@@ -921,6 +945,7 @@ struct GfxstreamApi
         SetDllDirectoryW(dir.c_str());
         dll = LoadLibraryExW((dir + L"\\gfxstream_backend.dll").c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
         if (!dll) { std::printf("gfxstream: LoadLibrary %ls: %lu\n", dir.c_str(), GetLastError()); return false; }
+        PatchWsaCodecsFrameSize(dir);
         init = (decltype(init))GetProcAddress(dll, "stream_renderer_init");
         get_cap_set = (decltype(get_cap_set))GetProcAddress(dll, "stream_renderer_get_cap_set");
         fill_caps = (decltype(fill_caps))GetProcAddress(dll, "stream_renderer_fill_caps");
@@ -962,6 +987,7 @@ static std::map<void*, std::pair<HANDLE, UINT64>> g_latte;  // view -> section, 
 // name is always gralloc_0; while the previous connection's section lives, the name gives that one back.
 static const UINT64 kLatteMediaSize = 0x2001ull << 12;
 static HANDLE g_latteMediaLast;  // the newest media section (LatteOpen); under g_latteLock
+static BYTE* g_latteMediaView;   // its view in this process (GskMediaListen reads the parameters there); under g_latteLock
 static void* LatteAlloc(UINT64 size)
 {
     std::wstring name;
@@ -973,7 +999,7 @@ static void* LatteAlloc(UINT64 size)
     if (!p) { std::printf("latte: alloc %llu failed: %lu\n", size, GetLastError()); if (sec) CloseHandle(sec); return nullptr; }
     std::lock_guard<std::mutex> l(g_latteLock);
     g_latte[p] = {sec, size};
-    if (!name.empty()) g_latteMediaLast = sec;
+    if (!name.empty()) { g_latteMediaLast = sec; g_latteMediaView = (BYTE*)p; }
     return p;
 }
 static void LatteFree(void* p)
@@ -4226,6 +4252,17 @@ static bool SharesHaveGfxstream()
         if (line.rfind("hdv gpu", 0) == 0 && line.find("gfxstream=") != std::string::npos) return true;
     return false;
 }
+// settings.txt of the host folder has this exact line (read per media connection: no restart needed).
+static bool SettingsHasLine(const char* want)
+{
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    PathRemoveFileSpecW(self);
+    std::ifstream f(std::wstring(self) + L"\\settings.txt");
+    for (std::string line; std::getline(f, line);)
+        if (line == want) return true;
+    return false;
+}
 static void GskMediaListen()
 {
     auto create = (UINT32 (*)())GetProcAddress(g_gfx.dll, "gfxstream_backend_create_channel");
@@ -4248,13 +4285,76 @@ static void GskMediaListen()
                 std::printf("media: connection, channel %u\n", h);
                 char ping[48];
                 unsigned n = 0;
+                // Android 15+ hands a VP9 decoder from WebM its CodecPrivate as csd-0 (9 bytes: profile, level, bit depth),
+                // which ACodec queues as a codec-config buffer. AOSP's VP9 decoders drop it; Microsoft's Latte plugin sends
+                // it to the host decoder like a frame, and msvp9dec (WSACodecs) then holds 128 frames and the guest loses
+                // them at EOS (22 of 150; Android 14 of the stock WSA has no csd-0 and gets 150). Here such a packet of a
+                // VP9 context — flagged as config and not a frame: a VP9 frame starts with frame_marker 0b10 — is answered
+                // as consumed and never reaches the decoder (29.10.2026, docs/own-host.md). settings.txt
+                // "media_vp9csd pass" lets it through.
+                BYTE* view = nullptr;           // this channel's media section
+                std::set<UINT64> vp9;           // its VP9 contexts
+                std::set<UINT64> decoded;       // contexts the host decoder has had a packet for
+                unsigned skipped = 0;
+                bool skipCsd = !SettingsHasLine("media_vp9csd pass");
+                // settings.txt "media_trace on": every ping to media-trace-<channel>.txt with the time, the metadata
+                // (codec << 56 | offset << 8 | operation, AEMU makeMetadata; the offset is in MiB of the media section),
+                // the parameters there before the call (64 bytes) and after it (128), and the answer at +0x100 (256)
+                // (29.10.2026, VP9 losing frames).
+                FILE* trace = nullptr;
+                if (SettingsHasLine("media_trace on"))
+                {
+                    wchar_t path[MAX_PATH];
+                    GetModuleFileNameW(nullptr, path, MAX_PATH);
+                    PathRemoveFileSpecW(path);
+                    trace = _wfopen((std::wstring(path) + L"\\media-trace-" + std::to_wstring(h) + L".txt").c_str(), L"w");
+                }
                 for (; recv(c, ping, sizeof ping, MSG_WAITALL) == sizeof ping; n++)
                 {
                     std::string in = n < 16 ? Hex(ping, sizeof ping) : "";
-                    op(h, ping, sizeof ping);
+                    UINT64 meta;
+                    std::memcpy(&meta, ping + 16, 8);
+                    UINT64 off = meta >> 8 & 0xffffffffffffull;
+                    BYTE* at = view && (off << 20) + 0x1000 <= kLatteMediaSize ? view + (off << 20) : nullptr;
+                    std::string before = trace && at ? Hex((const char*)at, 64) : "";
+                    UINT64* param = (UINT64*)at;
+                    UINT64* answer = at ? (UINT64*)(at + 0x100) : nullptr;
+                    int operation = (int)(meta & 0xff);
+                    bool vp9Context = n > 0 && at && vp9.count(param[0]);
+                    if (skipCsd && vp9Context && operation == 2 && param[4] == 1 && param[2] && param[1] + param[2] <= kLatteMediaSize - (off << 20)
+                        && (at[param[1]] & 0xc0) != 0x80)
+                    {
+                        // VP9's codec-config buffer (param[4] = 1, the plugin's config flag): skipped, answered as consumed.
+                        if (skipped++ < 4) std::printf("media: channel %u context %llu: VP9 codec config of %llu bytes (%02x...) not given to the decoder\n", h,
+                                                       (unsigned long long)param[0], (unsigned long long)param[2], at[param[1]]);
+                        std::memset(answer, 0, 64);
+                        answer[0] = param[2];
+                    }
+                    else if (skipCsd && vp9Context && operation == 3 && !decoded.count(param[0]))
+                    {
+                        // The host decoder comes into being with the first decode: GetImage before it blocks the channel for
+                        // good. Until then there is no frame (-1, as the decoder answers).
+                        std::memset(answer, 0, 64);
+                        *(UINT32*)answer = 0xffffffffu;
+                    }
+                    else
+                    {
+                        op(h, ping, sizeof ping);
+                        if (n > 0 && at && operation == 2) decoded.insert(param[0]);
+                    }
+                    if (n == 0)
+                    {
+                        std::lock_guard<std::mutex> l(g_latteLock);
+                        view = g_latteMediaView;  // allocatePages of this channel has just made its section
+                    }
+                    if (n > 0 && at && operation == 0 && param[1] == 3) { vp9.insert(answer[0]); decoded.erase(answer[0]); }  // InitContext: codec 3 is VP9, the answer its context
+                    if (trace)
+                        std::fprintf(trace, "%llu #%u meta %016llx params %s after %s answer %s\n", (unsigned long long)GetTickCount64(), n,
+                                     (unsigned long long)meta, before.c_str(), at ? Hex((const char*)at, 128).c_str() : "", at ? Hex((const char*)at + 0x100, 256).c_str() : "");
                     if (n < 16) std::printf("media: channel %u #%u %s -> %s\n", h, n, in.c_str(), Hex(ping, sizeof ping).c_str());
                     if (send(c, ping, sizeof ping, 0) != sizeof ping) break;
                 }
+                if (trace) std::fclose(trace);
                 std::printf("media: channel %u closed after %u pings (%d)\n", h, n, WSAGetLastError());
                 close(h);
                 closesocket(c);

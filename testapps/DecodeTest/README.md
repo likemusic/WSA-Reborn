@@ -11,3 +11,5 @@ adb shell am start -n org.wsalineage.decodetest/.MainActivity --es codec c2.andr
 adb shell am start -n org.wsalineage.decodetest/.MainActivity --ez show true          # on screen, at the clip's pace
 adb logcat -s DecodeTest
 ```
+
+`--ez list true` lists the decoders (`CODEC <name> <types> hw sw alias`); `--ez show true` shows the frames on a `SurfaceView` in real time; `--ez nocsd true` drops `csd-0/1/2` from the format, so no codec-config buffer is queued (VP9 from WebM on Android 15+, `docs/own-host.md`). `RESULT` also has `inputs=` and `first_output_after=`.
