@@ -220,7 +220,7 @@ The guest's log buffers are small (`adb logcat -d` loses the start of the boot w
 - **Untested**: IME composition (CJK) through TSF, dictation (`Win+H`), the Windows touch keyboard, keyboard media keys, minimizing windows from the host side.
 - **First boot on a clean `/data`** (Android 14, LineageOS 21, Android 15): Microsoft's Bluetooth HAL crashes a few times, then Bluetooth stays off. Not a blocker.
 - **Android 17**: AOSP Launcher3 used to crash in the taskbar code; `a17/0024` fixes it and Launcher3 is enabled again (the home screen is never visible in WSA anyway, only in the own host's one-window mode).
-- **No hardware video codecs**, as on stock.
+- **Hardware video decoding** is Microsoft's: the Latte OMX plugin in the `vendor` image (`OMX.android.latte.*`) decodes through Media Foundation on the host, as on stock. Two quirks are fixed by scripts: on Android 15+ its VP9 component gets a codec-config buffer it cannot handle (`bin/latte-vp9-csd.py`), and its MPEG-4 Part 2 component registers a non-standard role (`bin/latte-mpeg4-role.py`); details in [own-host.md](own-host.md). No hardware encoders.
 - **Version ceiling**: the frozen vendor needs framework matrix 7 and the VNDK-33 snapshot in the system image; both are present up to Android 17, the newest release checked. A release that drops them would require a vendor image of our own.
 - **One instance**: all WSA variants share one package identity, so only one install can be registered at a time.
 - **Builds are `userdebug`** on purpose (adb works without a key prompt; `adb root` is available on AOSP images, disabled by a LineageOS setting on LineageOS 21).
