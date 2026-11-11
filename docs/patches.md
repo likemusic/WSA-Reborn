@@ -85,6 +85,11 @@ Legend: **yes** — included and needed (observed live or confirmed from the tar
 | `0029` | `frameworks/base` WM Shell `FreeformTaskListener.java` | a freeform task that became visible without a transition gets its leash position and crop | an app whose cold start takes over 5 s (the OPEN transition times out and is aborted) draws in its window, but the leash stays at `(0,0)` uncropped and taps and mouse clicks miss it | yes | inc. | inc. | yes | inc. |
 | `a16/0030` | `packages/apps/Launcher3` `TaskbarManager.java` | recreate the taskbar on `CHANGE_SUPPORTED_BOUNDS` | after the display changes size at run time (own host, `scale_desktop resize`) the taskbar keeps the profile of the previous size: all apps from it is a narrow column with cut labels | no | no | no | yes | no |
 | `a17/0031` | `packages/apps/Launcher3` `res/values/config.xml` | `hotseat_qsb_space_default` 16 dp instead of 0 | with a taskbar the search bar of Android 17 sits right on top of the hotseat and covers the top of its icons | no | no | no | no | yes |
+| `0032` | `art` `libnativebridge/native_bridge.cc` | a native bridge older than v7 (WSA's libhoudini 14.0.0) gets the JNI function pointer back as is instead of `nullptr` | ARM apps that register natives abort: `nativebridge: not compatible with version 7` | no | no | inc. | inc. | yes |
+| `0033` | `bionic` `linker/linker_main.cpp`, `linker.cpp` | keep `solist`/`g_cfi_shadow` under the names libhoudini looks up in `linker64`'s `.symtab` | ThinLTO (Android 16+) renames them `<name>.llvm.<hash>`; libhoudini resolves offset 0 and ARM apps crash at `+0x39a0aa` | no | no | no | yes | yes |
+| `0034` | `hardware/google/gfxstream` guest `vulkan_enc` (generator `functable.py`) | `vkUpdateDescriptorSetWithTemplateKHR` goes through `ResourceTracker` like the core name | own host only: Unity/Vulkan apps crash the host GPU process (descriptor set unknown to the host) | – | – | – | own host | own host |
+| `0035` | `frameworks/base` `PackageAbiHelperImpl.java`, `AndroidPackageUtils.java` | always extract native libraries of apps that are not on the system image | React Native apps (SoLoader) installed with `extractNativeLibs=false` find no ARM libraries and close | inc. | inc. | inc. | inc. | yes |
+| `0036` | `frameworks/native` `inputflinger/dispatcher/InputDispatcher.cpp` | a separate `InputTarget` for `HOVER_EXIT` next to an `OUTSIDE` target of the same window | hovering the taskbar and then tapping elsewhere aborts `system_server` (`addPointers - overlap`), every app restarts | no | no | inc. | yes | inc. |
 
 `0001`/`0002` were early SurfaceFlinger experiments (`SurfaceFlinger.cpp` key map and `Layer.cpp` metadata) written before `0006`. They are superseded by `0006` but still present in the LineageOS `frameworks_native` patch, because they remained in that build tree; they are not part of any AOSP series.
 
@@ -193,6 +198,16 @@ The own host can make the Android display follow its window (`scale_desktop resi
 ### a17/0031 — Search bar over the hotseat on Android 17
 
 With a taskbar and a search bar that is not inline in the hotseat, Android 17 puts the search bar (`OseWidgetView`) right above the hotseat icons, `hotseatQsbSpace` apart. No grid in `device_profiles.xml` sets that space, so the default `hotseat_qsb_space_default` of 0 is used, and the fallback "Search" pill covers the top of the icons. The patch sets the default to 16 dp: `patches/aosp17/packages_apps_Launcher3/0002-WSA-a17-0031-Launcher3-hotseat-qsb-space.patch`. It is a resource, so without a rebuild it goes in as the static overlay `device/microsoft/wsa_x86_64/WsaLauncher3Fix` (`/system_ext/overlay/WsaLauncher3Fix.apk`; a step of `bin/build-gsi-slot.sh` for Android 17+).
+
+### 0032–0036 — added in November 2026
+
+These five fixes were found on Android 15–17 with real apps (ARM translation, React Native, Vulkan games, taskbar input). They are verified live, but so far in an equivalent binary form in the slots (`0032` in `com.android.art.capex`, `0033` in `com.android.runtime.apex`, `0035` in `services.jar`) or not yet in any slot (`0036`, native `libinputflinger.so`); the diffs here have not yet been through a full tree build. Each diff starts with a comment that names the symptom, the source of the bug and the versions it applies to.
+
+- `0032` — ART replaces a registered native's pointer with a native-bridge trampoline; for a bridge older than v7 (WSA's libhoudini 14.0.0) the trampoline is `nullptr` and `ClassLinker::RegisterNative` aborts. The bridge handles the pointer itself, so it is handed back unchanged.
+- `0033` — libhoudini parses `linker64` on disk and looks up `__dl__ZL6solist` and `__dl__ZL12g_cfi_shadow` by exact name. Android 16 builds the linker with ThinLTO (names get an `.llvm.<hash>` suffix) and Android 17 renamed `solist` to `solist_head`; the patch keeps both names visible. For a prebuilt image, `bin/linker-houdini-symbols.py` adds the symbols to an existing `linker64`.
+- `0034` — the guest Vulkan encoder's function table is generated; the KHR alias of `vkUpdateDescriptorSetWithTemplate` bypassed `ResourceTracker`. Only for the own host (gfxstream); `bin/vulkan-enc-template-khr.py` patches a built `libvulkan_enc.so`.
+- `0035` — SoLoader builds library paths from the device's first ABI (`<apk>!/lib/x86_64`) and never finds the ARM libraries kept uncompressed in the split APK. Extracting them costs disk space only.
+- `0036` — reproduced on Android 16: hover the taskbar, then tap elsewhere; the same code is in `android15-release` through `main`.
 
 ## LineageOS-only changes
 

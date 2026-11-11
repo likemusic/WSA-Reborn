@@ -13,7 +13,7 @@
  *
  * Frame sink (15.10.2026): every presented client target is copied out of its dma-buf (minigbm dmaheap handle: one
  * linear plane, fds[0]) and sent to the host over vsock, port vendor.wsa.headless.frame_port (default 50100, 0 = off),
- * where host/host shows it in a window. A sender thread keeps only the latest frame; while no host listens it
+ * where the own host shows it in a window. A sender thread keeps only the latest frame; while no host listens it
  * reconnects every 2 s and nothing is copied. Wire format: struct FrameHeader, then height * stride bytes.
  *
  * With a host GPU (16.10.2026): the module also runs over Microsoft's own vendor graphics — gralloc and EGL of gfxstream

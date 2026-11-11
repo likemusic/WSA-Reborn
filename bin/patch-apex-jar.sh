@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Replaces a single jar inside an APEX module without rebuilding the whole module.
 #
-#   bin/patch-apex-jar.sh <source apex> <jar inside> <replacement> <output path>
+#   bin/patch-apex-jar.sh <source apex> <jar inside | /path/inside> <replacement> <output path>
 #
 #   example: bin/patch-apex-jar.sh our/com.android.tethering.apex \
 #             service-connectivity.jar ms-service-connectivity.jar out.apex
@@ -38,22 +38,35 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 [ -f "$WORK/apex_payload.img" ] || { echo "apex has no apex_payload.img" >&2; exit 1; }
 
 IMG="$WORK/apex_payload.img"
-OLD_SIZE=$(debugfs -R "stat /javalib/$JAR_NAME" "$IMG" 2>/dev/null | grep -oP 'Size: \K[0-9]+' | head -1)
+# A bare name is a jar in /javalib; a path with a slash is any file of the module (/lib64/libnativebridge.so in
+# com.android.art, patches/common/art/0032, 30.10.2026).
+case "$JAR_NAME" in */*) P="$JAR_NAME";; *) P="/javalib/$JAR_NAME";; esac
+TMP_NAME=$(basename "$P")
+OLD_SIZE=$(debugfs -R "stat $P" "$IMG" 2>/dev/null | grep -oP 'Size: \K[0-9]+' | head -1)
 NEW_SIZE=$(stat -c %s "$NEW_JAR")
-echo "replacing /javalib/$JAR_NAME: $OLD_SIZE -> $NEW_SIZE bytes"
+echo "replacing $P: $OLD_SIZE -> $NEW_SIZE bytes"
+# The label of the file being replaced (system_file for javalib, system_lib_file for lib64).
+CTX=$(debugfs -R "ea_get $P security.selinux" "$IMG" 2>/dev/null | grep -oP '"\Ku:object_r:[^"\\]*' | head -1)
+# Owner and mode too: javalib is 1000:1000 0644, but /bin/linker64 of com.android.runtime is 0:2000 0755 (0033,
+# 03.11.2026) — a hardcoded 0644 left the dynamic linker non-executable. stat prints the mode without the file
+# type bits; sif needs the full st_mode, hence 0100.
+STAT=$(debugfs -R "stat $P" "$IMG" 2>/dev/null)
+OLD_UID=$(echo "$STAT" | grep -oP 'User:\s+\K[0-9]+' | head -1)
+OLD_GID=$(echo "$STAT" | grep -oP 'Group:\s+\K[0-9]+' | head -1)
+OLD_MODE=$(echo "$STAT" | grep -oP 'Mode:\s+\K[0-7]+' | head -1)
 
-debugfs -w -R "rm /javalib/$JAR_NAME" "$IMG" >/dev/null 2>&1
-debugfs -w -R "write $NEW_JAR $JAR_NAME" "$IMG" >/dev/null 2>&1
-debugfs -w -R "ln /$JAR_NAME /javalib/$JAR_NAME" "$IMG" >/dev/null 2>&1
-debugfs -w -R "unlink /$JAR_NAME" "$IMG" >/dev/null 2>&1
+debugfs -w -R "rm $P" "$IMG" >/dev/null 2>&1
+debugfs -w -R "write $NEW_JAR $TMP_NAME" "$IMG" >/dev/null 2>&1
+debugfs -w -R "ln /$TMP_NAME $P" "$IMG" >/dev/null 2>&1
+debugfs -w -R "unlink /$TMP_NAME" "$IMG" >/dev/null 2>&1
 
 # debugfs write does not carry over owner, mode and label — restore them per the reference.
-debugfs -w -R "sif /javalib/$JAR_NAME uid 1000" "$IMG" >/dev/null 2>&1
-debugfs -w -R "sif /javalib/$JAR_NAME gid 1000" "$IMG" >/dev/null 2>&1
-debugfs -w -R "sif /javalib/$JAR_NAME mode 0100644" "$IMG" >/dev/null 2>&1
+debugfs -w -R "sif $P uid ${OLD_UID:-1000}" "$IMG" >/dev/null 2>&1
+debugfs -w -R "sif $P gid ${OLD_GID:-1000}" "$IMG" >/dev/null 2>&1
+debugfs -w -R "sif $P mode 0100$(printf %03o $(( 8#${OLD_MODE:-644} )))" "$IMG" >/dev/null 2>&1
 # The label is set from a file: the string must end with a NUL byte, like its neighbours.
-printf 'u:object_r:system_file:s0\0' > "$WORK/ctx.bin"
-debugfs -w -R "ea_set -f $WORK/ctx.bin /javalib/$JAR_NAME security.selinux" "$IMG" >/dev/null 2>&1
+printf '%s\0' "${CTX:-u:object_r:system_file:s0}" > "$WORK/ctx.bin"
+debugfs -w -R "ea_set -f $WORK/ctx.bin $P security.selinux" "$IMG" >/dev/null 2>&1
 
 # dm-verity (11.10.2026). Android 15 apexd mounts a pre-installed APEX through dm-verity using the hashtree in
 # the payload's AVB footer — after the edit above the old tree no longer matches, and activation fails with

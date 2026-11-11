@@ -3,7 +3,7 @@
 # its gralloc, EGL and Vulkan of gfxstream render on the host GPU through gfxstream_backend.dll — with only the composer
 # swapped: our HWC2 (device/microsoft/wsa_x86_64/headless-hwc) in place of hwcomposer.windows.so, whose frames would go
 # to the GSK renderer that only WsaClient has. Our HWC2 reads the client target and the task layers back from the host
-# (TRANSFER_FROM_HOST) and sends them to host/host on vsock 50100, as for the headless vendor.
+# (TRANSFER_FROM_HOST) and sends them to the own host on vsock 50100, as for the headless vendor.
 #
 #   bin/hwc-vendor.sh <vendor.vhdx of an install> <hwcomposer.wsa_headless.so> <out vendor-gpu.vhdx>
 #   bin/hwc-vendor.sh /mnt/c/WSA/vendor.vhdx \

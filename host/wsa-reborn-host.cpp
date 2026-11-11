@@ -1286,7 +1286,7 @@ struct HdvGpu
     UINT32 eventsRead = 0;
     struct Resource { UINT32 format = 0, width = 0, height = 0; std::vector<std::pair<UINT64, UINT32>> backing; std::vector<BYTE> pixels; };
     std::map<UINT32, Resource> resources;
-    std::map<UINT32, std::vector<std::pair<void*, UINT64>>> apertures;  // 3D: guest memory of a resource, mapped
+    std::map<UINT32, std::vector<UINT64>> apertures;  // 3D: guest memory chunks a resource references (GpaRef)
     std::map<UINT32, UINT64> blobMaps;                                   // 3D: host-visible blob -> offset in BAR2
     UINT32 scanoutResource = 0;
     UINT64 flushes = 0, transfers = 0, commands = 0;
@@ -1523,8 +1523,8 @@ static void HdvGpuSaveFrame(HdvGpu& d)
 
 // 3D: virtio-gpu commands of a guest with VIRGL + RESOURCE_BLOB into stream_renderer_* (the guest's gfxstream — Microsoft's
 // EGL/Vulkan/gralloc in vendor — talks address-space-graphics over execbuffer and host-visible blobs). Fences are answered
-// at once, as WsaClient does (its fence callback is empty). Guest memory reaches the renderer as iovecs of apertures
-// (HdvCreateGuestMemoryAperture per backing entry); a host-visible blob is mapped into BAR2 with
+// at once, as WsaClient does (its fence callback is empty). Guest memory reaches the renderer as iovecs over GuestPtr
+// (1 MiB apertures kept for the device's life); a host-visible blob is mapped into BAR2 with
 // HdvCreateSectionBackedMmioRange from the handle stream_renderer_export_blob gives.
 struct GfxIovec { void* base; size_t len; };
 struct GfxBox { UINT32 x, y, z, w, h, d; };
@@ -1552,33 +1552,43 @@ static void HdvGpuUnmapSection(HDV_DEVICE dev, UINT64 barOffset)
         g_hdvSupportFs->DestroySectionBackedMmioRange(kHdvGpuInstance, HDV_PCI_BAR2, barOffset / 4096);
 }
 
+// Guest memory of the resources: chunks of the guest memory cache with a reference per resource (GpaRef/GpaUnref).
+static BYTE* GpaRef(HDV_DEVICE dev, UINT64 gpa, UINT64* avail, UINT64* key);
+static void GpaUnref(HDV_DEVICE dev, const std::vector<UINT64>& keys);
 static void HdvGpuUnmapApertures(HdvGpu& d, UINT32 res)
 {
     auto it = d.apertures.find(res);
     if (it == d.apertures.end()) return;
-    for (auto& a : it->second) HdvDestroyGuestMemoryAperture(d.handle, a.first);
+    GpaUnref(d.handle, it->second);
     d.apertures.erase(it);
 }
 
-// Backing entries {addr u64, length u32, padding u32} at req[off..] into apertures.
+// Backing entries {addr u64, length u32, padding u32} at req[off..] into iovecs over the guest memory cache (1 MiB
+// apertures), each chunk referenced while the resource holds it. Neighbouring entries are merged into one iovec.
 static std::vector<GfxIovec> HdvGpuIovecs(HdvGpu& d, UINT32 res, const std::vector<BYTE>& req, size_t off, UINT32 n)
 {
     HdvGpuUnmapApertures(d, res);
     std::vector<GfxIovec> iov;
-    auto& list = d.apertures[res];
+    auto& keys = d.apertures[res];
     for (UINT32 i = 0; i < n && off + 16 * (i + 1) <= req.size(); i++)
     {
         UINT64 addr;
         UINT32 len;
         std::memcpy(&addr, req.data() + off + 16 * i, 8);
         std::memcpy(&len, req.data() + off + 16 * i + 8, 4);
-        UINT64 page = addr & ~4095ULL;
-        UINT32 span = (UINT32)(((addr + len + 4095) & ~4095ULL) - page);
-        PVOID p = nullptr;
-        HRESULT hr = HdvCreateGuestMemoryAperture(d.handle, page, span, FALSE, &p);
-        if (FAILED(hr)) { std::printf("hdv gpu: aperture 0x%llx %u: 0x%08lx\n", page, span, hr); continue; }
-        list.push_back({p, span});
-        iov.push_back({(BYTE*)p + (addr - page), len});
+        while (len)
+        {
+            UINT64 avail = 0, key = 0;
+            BYTE* p = GpaRef(d.handle, addr, &avail, &key);
+            if (!p) { static int logged = 0; if (logged++ < 20) std::printf("hdv gpu: no mapping for 0x%llx (resource %u)\n", addr, res); break; }
+            if (keys.empty() || keys.back() != key) keys.push_back(key);
+            else GpaUnref(d.handle, {key});  // one reference per chunk and resource
+            size_t take = (size_t)std::min<UINT64>(avail, len);
+            if (!iov.empty() && (BYTE*)iov.back().base + iov.back().len == p) iov.back().len += take;
+            else iov.push_back({p, take});
+            addr += take;
+            len -= (UINT32)take;
+        }
     }
     return iov;
 }
@@ -1859,42 +1869,108 @@ static UINT32 HdvGpuCommand(HdvGpu& d, const std::vector<BYTE>& req, std::vector
     return (UINT32)resp.size();
 }
 
-// Guest memory for the GPU's rings and requests. HdvReadGuestMemory/HdvWriteGuestMemory answer 0x80070005 when the
-// device host is proxied (--hdv-host, HdvInitializeDeviceHostForProxy, 16.10.2026), apertures work in both cases (as
-// wsldevicehost.dll does): guest memory is mapped 1 MiB at a time (a page at a time where a whole MiB is refused) and
-// the mappings are kept for the device's life.
+// Guest memory for the GPU's rings, requests and resources. HdvReadGuestMemory/HdvWriteGuestMemory answer 0x80070005
+// when the device host is proxied (--hdv-host, HdvInitializeDeviceHostForProxy, 16.10.2026), apertures work in both
+// cases (as wsldevicehost.dll does): guest memory is mapped 1 MiB at a time (a page at a time where a whole MiB is
+// refused). The proxied host ("ExternalRestricted") may keep only so much mapped: on host 7 with GApps apertures
+// were refused with 0x80070718 (ERROR_NOT_ENOUGH_QUOTA) at 183 MiB mapped (03.11.2026; a bigger working set of the
+// process did not change it). So a chunk is referenced by the resources whose backing it holds (the renderer keeps
+// those pointers), the rest is a cache: unreferenced chunks are unmapped, least recently used first, above
+// kGpaCacheBytes and whenever an aperture is refused for quota.
+struct GpaChunk { BYTE* p = nullptr; UINT32 size = 0; int refs = 0; UINT64 used = 0; };
 static std::mutex g_gpaLock;
-static std::map<UINT64, BYTE*> g_gpaChunks;  // chunk base (1 MiB, or a page with bit 0 set) -> mapping
-static BYTE* GuestPtr(HDV_DEVICE dev, UINT64 gpa, UINT64* avail)
+static std::map<UINT64, GpaChunk> g_gpaChunks;  // chunk base (1 MiB, or a page with bit 0 set) -> mapping; p null: a hole
+static UINT64 g_gpaMapped = 0, g_gpaReferenced = 0, g_gpaTick = 0, g_gpaEvicted = 0;
+static const UINT64 kGpaCacheBytes = 32ULL << 20;
+static void GpaEvictLocked(HDV_DEVICE dev, UINT64 keepUnreferenced)
+{
+    while (g_gpaMapped - g_gpaReferenced > keepUnreferenced)
+    {
+        auto victim = g_gpaChunks.end();
+        for (auto it = g_gpaChunks.begin(); it != g_gpaChunks.end(); ++it)
+            if (it->second.p && !it->second.refs && (victim == g_gpaChunks.end() || it->second.used < victim->second.used)) victim = it;
+        if (victim == g_gpaChunks.end()) break;
+        HdvDestroyGuestMemoryAperture(dev, victim->second.p);
+        g_gpaMapped -= victim->second.size;
+        g_gpaEvicted++;
+        g_gpaChunks.erase(victim);
+    }
+}
+static GpaChunk* GpaMapLocked(HDV_DEVICE dev, UINT64 key, UINT64 base, UINT32 size)
+{
+    auto it = g_gpaChunks.find(key);
+    if (it != g_gpaChunks.end()) return it->second.p ? &it->second : nullptr;
+    PVOID p = nullptr;
+    HRESULT hr = HdvCreateGuestMemoryAperture(dev, base, size, FALSE, &p);
+    if (hr == HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_QUOTA))
+    {
+        GpaEvictLocked(dev, 0);
+        hr = HdvCreateGuestMemoryAperture(dev, base, size, FALSE, &p);
+        static int logged = 0;
+        if (logged++ < 20 || (FAILED(hr) && logged < 200))
+            std::printf("hdv gpu: aperture quota at 0x%llx %u: mapped %llu MiB, referenced by resources %llu MiB, evicted %llu so far; retry 0x%08lx\n",
+                        base, size, g_gpaMapped >> 20, g_gpaReferenced >> 20, g_gpaEvicted, hr);
+        if (FAILED(hr)) return nullptr;  // not remembered: the quota frees up again
+    }
+    if (FAILED(hr)) { g_gpaChunks[key] = GpaChunk{}; return nullptr; }  // a hole in guest memory: remembered
+    GpaChunk& c = g_gpaChunks[key];
+    c.p = (BYTE*)p;
+    c.size = size;
+    g_gpaMapped += size;
+    static UINT64 nextLog = 64ULL << 20;
+    if (g_gpaMapped >= nextLog) { std::printf("hdv gpu: guest memory mapped %llu MiB, referenced by resources %llu MiB\n", g_gpaMapped >> 20, g_gpaReferenced >> 20); nextLog += 64ULL << 20; }
+    return &c;
+}
+// Pointer to guest memory at gpa and the bytes available there; *key — the chunk, for GpaRef. Lock held.
+static BYTE* GuestPtrLocked(HDV_DEVICE dev, UINT64 gpa, UINT64* avail, UINT64* key)
+{
+    UINT64 mib = gpa & ~0xFFFFFULL, page = gpa & ~0xFFFULL;
+    if (GpaChunk* c = GpaMapLocked(dev, mib, mib, 0x100000))
+    {
+        c->used = ++g_gpaTick;
+        *avail = mib + 0x100000 - gpa;
+        if (key) *key = mib;
+        return c->p + (gpa - mib);
+    }
+    if (GpaChunk* c = GpaMapLocked(dev, page | 1, page, 0x1000))
+    {
+        c->used = ++g_gpaTick;
+        *avail = page + 0x1000 - gpa;
+        if (key) *key = page | 1;
+        return c->p + (gpa - page);
+    }
+    return nullptr;
+}
+static BYTE* GpaRef(HDV_DEVICE dev, UINT64 gpa, UINT64* avail, UINT64* key)
 {
     std::lock_guard<std::mutex> l(g_gpaLock);
-    UINT64 mib = gpa & ~0xFFFFFULL, page = gpa & ~0xFFFULL;
-    auto it = g_gpaChunks.find(mib);
-    if (it != g_gpaChunks.end() && it->second) { *avail = mib + 0x100000 - gpa; return it->second + (gpa - mib); }
-    if (it == g_gpaChunks.end())
+    BYTE* p = GuestPtrLocked(dev, gpa, avail, key);
+    if (p)
     {
-        PVOID p = nullptr;
-        HRESULT hr = HdvCreateGuestMemoryAperture(dev, mib, 0x100000, FALSE, &p);
-        g_gpaChunks[mib] = SUCCEEDED(hr) ? (BYTE*)p : nullptr;
-        if (SUCCEEDED(hr)) { *avail = mib + 0x100000 - gpa; return (BYTE*)p + (gpa - mib); }
+        GpaChunk& c = g_gpaChunks[*key];
+        if (!c.refs++) g_gpaReferenced += c.size;
     }
-    auto pg = g_gpaChunks.find(page | 1);
-    if (pg == g_gpaChunks.end())
-    {
-        PVOID p = nullptr;
-        HRESULT hr = HdvCreateGuestMemoryAperture(dev, page, 0x1000, FALSE, &p);
-        if (FAILED(hr)) { static int logged = 0; if (logged++ < 5) std::printf("hdv gpu: aperture 0x%llx: 0x%08lx\n", page, hr); return nullptr; }
-        pg = g_gpaChunks.emplace(page | 1, (BYTE*)p).first;
-    }
-    *avail = page + 0x1000 - gpa;
-    return pg->second + (gpa - page);
+    return p;
 }
+static void GpaUnref(HDV_DEVICE dev, const std::vector<UINT64>& keys)
+{
+    std::lock_guard<std::mutex> l(g_gpaLock);
+    for (UINT64 k : keys)
+    {
+        auto it = g_gpaChunks.find(k);
+        if (it == g_gpaChunks.end() || !it->second.refs) continue;
+        if (!--it->second.refs) g_gpaReferenced -= it->second.size;
+    }
+    GpaEvictLocked(dev, kGpaCacheBytes);
+}
+// Copies under the lock: a chunk of the cache may be unmapped by another thread as soon as the lock is released.
 static HRESULT GuestCopy(HDV_DEVICE dev, UINT64 gpa, UINT64 len, BYTE* buf, bool write)
 {
+    std::lock_guard<std::mutex> l(g_gpaLock);
     while (len)
     {
         UINT64 avail = 0;
-        BYTE* p = GuestPtr(dev, gpa, &avail);
+        BYTE* p = GuestPtrLocked(dev, gpa, &avail, nullptr);
         if (!p) return write ? HdvWriteGuestMemory(dev, gpa, (UINT32)len, buf) : HdvReadGuestMemory(dev, gpa, (UINT32)len, buf);
         UINT64 n = (std::min)(avail, len);
         if (write) std::memcpy(p, buf, (size_t)n); else std::memcpy(buf, p, (size_t)n);
@@ -3997,6 +4073,10 @@ static void FsVerify(std::string req)
         std::lock_guard<std::mutex> l(g_fsLock);
         if (!g_verifyDeny.empty() && g_verifyDeny == package) { allow = false; log = " denied by \"verify deny\";"; }
     }
+    // Timing (03.11.2026: QQ, 99 MB, took 210 s from CreateSharedTempFile to the answer while shared_tmp writes at
+    // ~110 MB/s from the guest): the request arrives when the guest has copied the apks, the rest is AMSI.
+    RcmLog("files: PackageVerification " + std::to_string(id) + " " + package + " request, " + std::to_string(apks.size()) + " apk");
+    ULONGLONG t0 = GetTickCount64();
     HAMSICONTEXT ctx = nullptr;
     HRESULT hr = AmsiInitialize(L"wsa-reborn-host", &ctx);
     if (FAILED(hr)) { allow = false; log += " AmsiInitialize failed;"; }
@@ -4007,8 +4087,9 @@ static void FsVerify(std::string req)
         if (!safe) { allow = false; log += " bad name;"; continue; }
         std::wstring path = g_sharedTmp + L"\\quarantine\\" + Widen(a);
         std::string why;
+        ULONGLONG t1 = GetTickCount64();
         if (ctx && !FsAmsiClean(ctx, path, Widen(package + "/" + a), why)) allow = false;
-        log += " " + a + ": " + why + ";";
+        log += " " + a + ": " + why + ", " + std::to_string(GetTickCount64() - t1) + " ms;";
         DeleteFileW(path.c_str());
     }
     if (ctx) AmsiUninitialize(ctx);
@@ -4016,7 +4097,7 @@ static void FsVerify(std::string req)
     PbInt(r, 1, id);
     PbInt(r, 2, allow);
     FsSend(10, 11, r);  // PackageVerificationResult
-    RcmLog("files: PackageVerification " + std::to_string(id) + " " + package + " -> " + (allow ? "ALLOW" : "REJECT") + log);
+    RcmLog("files: PackageVerification " + std::to_string(id) + " " + package + " -> " + (allow ? "ALLOW" : "REJECT") + " in " + std::to_string(GetTickCount64() - t0) + " ms:" + log);
     std::printf("verify: %s -> %s\n", package.c_str(), allow ? "allow" : "reject");
 }
 

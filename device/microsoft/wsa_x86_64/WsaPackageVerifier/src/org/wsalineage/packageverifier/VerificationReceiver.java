@@ -19,6 +19,7 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.io.File;
@@ -31,8 +32,17 @@ import java.util.List;
 
 public final class VerificationReceiver extends BroadcastReceiver {
     private static final String TAG = "WsaPackageVerifier";
-    /** How long the reference waits: the host copies the package and runs it through the antivirus. */
-    private static final long VERIFICATION_TIMEOUT_MS = 120_000;
+    /**
+     * How long the system waits for the decision: the host copies the package and runs it through the antivirus.
+     * 120 s as in the reference, plus 2 s per MB of apks. The copy to the host alone takes longer than 120 s for a
+     * big game (Asphalt Legends, 16 apks, ~3.75 GB, rejected on timeout 02.11.2026), and the antivirus is slower
+     * still: AmsiScanBuffer took 181 s for QQ's 99 MB (~0.55 MB/s, own host 03.11.2026; GmsCore 119 MB — 43 s), so
+     * the former 1 s per 10 MB (130 s for QQ) rejected it. 2 s per MB assumes 0.5 MB/s. PackageManager caps an
+     * extension at one hour.
+     */
+    private static final long BASE_TIMEOUT_MS = 120_000;
+    private static final long MS_PER_MB = 2_000;
+    private static final long MAX_TIMEOUT_MS = 60 * 60_000;
     private static final Uri BRIDGE = Uri.parse("content://org.wsalineage.shellbridge.verify");
 
     @Override
@@ -40,21 +50,33 @@ public final class VerificationReceiver extends BroadcastReceiver {
         if (!Intent.ACTION_PACKAGE_NEEDS_VERIFICATION.equals(intent.getAction())) return;
         final int id = intent.getIntExtra(PackageManager.EXTRA_VERIFICATION_ID, -1);
         final PackageManager pm = context.getPackageManager();
-        pm.extendVerificationTimeout(id, PackageManager.VERIFICATION_REJECT, VERIFICATION_TIMEOUT_MS);
+        final long timeoutMs = timeoutFor(intent);
+        pm.extendVerificationTimeout(id, PackageManager.VERIFICATION_REJECT, timeoutMs);
+        final long deadline = SystemClock.elapsedRealtime() + timeoutMs;
         final Intent copy = new Intent(intent);
         final Context app = context.getApplicationContext();
         new Thread(() -> {
-            boolean allow = verify(app, id, copy);
+            boolean allow = verify(app, id, copy, deadline);
             Log.i(TAG, "verification " + id + ": " + (allow ? "allow" : "REJECT"));
             pm.verifyPendingInstall(id, allow
                     ? PackageManager.VERIFICATION_ALLOW : PackageManager.VERIFICATION_REJECT);
         }, "verify-" + id).start();
     }
 
-    private static boolean verify(Context context, int id, Intent intent) {
+    private static List<File> apksOf(Intent intent) {
         String dir = intent.getData() != null ? intent.getData().getPath() : null;
-        List<File> apks = apksOf(dir,
-                intent.getStringExtra("android.content.pm.extra.VERIFICATION_ROOT_HASH"));
+        return apksOf(dir, intent.getStringExtra("android.content.pm.extra.VERIFICATION_ROOT_HASH"));
+    }
+
+    private static long timeoutFor(Intent intent) {
+        long bytes = 0;
+        for (File apk : apksOf(intent)) bytes += apk.length();
+        return Math.min(MAX_TIMEOUT_MS, BASE_TIMEOUT_MS + bytes * MS_PER_MB / (1024 * 1024));
+    }
+
+    private static boolean verify(Context context, int id, Intent intent, long deadline) {
+        String dir = intent.getData() != null ? intent.getData().getPath() : null;
+        List<File> apks = apksOf(intent);
         if (apks.isEmpty()) {
             Log.w(TAG, "verification " + id + ": no apk in " + dir);
             return false;
@@ -70,6 +92,8 @@ public final class VerificationReceiver extends BroadcastReceiver {
         extras.putString("installer",
                 intent.getStringExtra("android.content.pm.extra.VERIFICATION_INSTALLER_PACKAGE"));
         extras.putInt("sessionId", intent.getIntExtra("android.content.pm.extra.SESSION_ID", -1));
+        // The bridge waits for the host until this moment (elapsedRealtime) instead of its own fixed 110 s.
+        extras.putLong("deadline", deadline);
 
         ParcelFileDescriptor[] readEnds = new ParcelFileDescriptor[apks.size()];
         List<Thread> writers = new ArrayList<>();

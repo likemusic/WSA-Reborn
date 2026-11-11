@@ -1,0 +1,36 @@
+# art/libnativebridge: a native bridge older than v7 (houdini 14.0.0 of WSA) gets the function pointer back as is,
+# instead of nullptr. Android 15-17 (art/runtime/jni/jni_internal.cc, RegisterNatives): for a natively bridged class
+# loader namespace (A16+: or NativeBridgeIsNativeBridgeFunctionPointer) ART replaces fnPtr with
+# GenerateNativeBridgeTrampoline -> NativeBridgeGetTrampolineForFunctionPointer, which returns nullptr for a bridge
+# below CRITICAL_NATIVE_SUPPORT_VERSION, and ClassLinker::RegisterNative aborts:
+#   nativebridge: not compatible with version 7, getTrampolineFnPtrWithJNICallType() isn't invoked
+#   Check failed: native_method != nullptr ... (SIGABRT)
+# Every ARM-only app that registers natives from its own .so dies at start (Messenger, Snapchat, Lazada, CamScanner,
+# Pokémon GO / Unity, 30.10.2026). Up to Android 14 ART registered fnPtr as is, and houdini's JNIEnv for ARM code had
+# already put its own trampoline there; returning the pointer restores that.
+#
+# Applies to android15/16/17 (same code). On the aosp17-vanilla slot it is applied in binary form: in
+# /system/apex/com.android.art.capex -> plain .apex, /lib64/libnativebridge.so (md5 35af2c4e… -> 547cebed…):
+#   0x2c7e 74 4a -> 74 69          callbacks == NULL: je to "return nullptr" (rbx not set there)
+#   0x2c86 74 42 -> 74 61          version == 0: same
+#   0x2cca 48 8d 35 d7 e6 -> 48 89 d8 eb 1c   mov %rbx,%rax (method); jmp to the epilogue
+# module re-signed with the public test keys of art/build/apex (bin/patch-apex-jar.sh, /path form).
+--- a/libnativebridge/native_bridge.cc
++++ b/libnativebridge/native_bridge.cc
+@@ -603,11 +603,11 @@ void* NativeBridgeGetTrampolineForFunctionPointer(const void* method,
+     return nullptr;
+   }
+
+   if (isCompatibleWith(CRITICAL_NATIVE_SUPPORT_VERSION)) {
+     return callbacks->getTrampolineForFunctionPointer(method, shorty, len, jni_call_type);
+-  } else {
+-    ALOGE("not compatible with version %d, getTrampolineFnPtrWithJNICallType() isn't invoked",
+-          CRITICAL_NATIVE_SUPPORT_VERSION);
+-    return nullptr;
+   }
++  // WSA: an older bridge (houdini) wraps JNIEnv for bridged code and hands RegisterNatives its own trampolines
++  // already; the pointer is usable as is, as it was up to Android 14.
++  return const_cast<void*>(method);
+ }
+
+ bool NativeBridgeIsSupported(const char* libpath) {

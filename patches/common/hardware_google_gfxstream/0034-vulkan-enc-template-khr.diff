@@ -1,0 +1,33 @@
+# gfxstream guest (libvulkan_enc): vkUpdateDescriptorSetWithTemplateKHR must go through ResourceTracker too.
+#
+# guest/vulkan_enc/func_table.cpp is generated (codegen/vulkan/vulkan-codegen/.../cereal/functable.py). The core name is
+# in its custom table and calls ResourceTracker::on_vkUpdateDescriptorSetWithTemplate, the KHR alias is not and calls
+# VkEncoder::vkUpdateDescriptorSetWithTemplateKHR directly. A descriptor set that so far exists only in the guest
+# (batched descriptor updates) then reaches the host unknown and unboxes to NULL; the driver reads the set:
+#   CRASH 0xc0000005 at amdvlk64.dll+0x1bad5b (access 0x18), decoder call vkUpdateDescriptorSetWithTemplateKHR
+# That takes down the whole GPU process of the host, all guest graphics with it (screencap hangs, the guest goes on
+# answering adb). Unity calls the KHR name: Crazy Taxi (rank 116) and Shopee PriceTool (rank 148), 03.11.2026.
+#
+# NOT BUILT (no build machine). Applied in binary form — bin/vulkan-enc-template-khr.py writes a jump to the core entry
+# at the start of both KHR entries in /vendor/lib64/libvulkan_enc.so. The file and line below are from memory of the
+# generator's layout and need checking against the tree.
+--- a/codegen/vulkan/vulkan-codegen/src/main/python/cereal/functable.py
++++ b/codegen/vulkan/vulkan-codegen/src/main/python/cereal/functable.py
+@@
+ RESOURCE_TRACKER_ENTRIES = [
+     "vkUpdateDescriptorSetWithTemplate",
++    "vkUpdateDescriptorSetWithTemplateKHR",
+ ]
+--- a/guest/vulkan_enc/ResourceTracker.h
++++ b/guest/vulkan_enc/ResourceTracker.h
+@@
+     void on_vkUpdateDescriptorSetWithTemplate(void* context, VkDevice device,
+                                               VkDescriptorSet descriptorSet,
+                                               VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+                                               const void* pData);
++    void on_vkUpdateDescriptorSetWithTemplateKHR(void* context, VkDevice device,
++                                                 VkDescriptorSet descriptorSet,
++                                                 VkDescriptorUpdateTemplate descriptorUpdateTemplate,
++                                                 const void* pData) {
++        on_vkUpdateDescriptorSetWithTemplate(context, device, descriptorSet, descriptorUpdateTemplate, pData);
++    }

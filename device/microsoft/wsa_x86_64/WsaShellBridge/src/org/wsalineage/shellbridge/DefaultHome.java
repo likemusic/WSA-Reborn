@@ -55,16 +55,23 @@ final class DefaultHome {
     private DefaultHome() {}
 
     static void applyOnce(Context context, Handler handler) {
-        if (Settings.Global.getInt(context.getContentResolver(), APPLIED_KEY, 0) == 1) return;
+        // The role was set earlier, possibly by a bridge without syncTaskbar (before 27.10.2026): /data pools from
+        // then keep Launcher3's taskbar with our home, and its WATCH_OUTSIDE_TOUCH window crashed system_server on
+        // A16 (docs/patches/0036, 07.11.2026). Then only bring the taskbar in line with whoever is home — after
+        // unlock, since before it neither home activity resolves (both are not directBootAware).
+        final boolean applied = Settings.Global.getInt(context.getContentResolver(), APPLIED_KEY, 0) == 1;
+        final Runnable action = applied
+                ? () -> syncTaskbar(context, LAUNCHER.equals(homePackage(context)))
+                : () -> setRole(context);
         if (context.getSystemService(UserManager.class).isUserUnlocked()) {
-            setRole(context);
+            action.run();
             return;
         }
         context.registerReceiver(new BroadcastReceiver() {
             @Override
             public void onReceive(Context c, Intent intent) {
                 context.unregisterReceiver(this);
-                setRole(context);
+                action.run();
             }
         }, new IntentFilter(Intent.ACTION_USER_UNLOCKED), null, handler);
     }

@@ -98,8 +98,13 @@ public final class FileSystemBridge implements ApiChannel.Handler {
     /** Temporary directory shared with the host; apks for verification go into its quarantine subdirectory. */
     private static final File SHARED_TMP = new File("/mnt/shared_tmp");
     private static final String QUARANTINE = "quarantine";
-    /** Wait for the host's decision less than the system waits for the verifier (120 s in the reference). */
+    /**
+     * Wait for the host's decision less than the system waits for the verifier: until the verifier's deadline
+     * (it grows with the package size) minus this margin, or 110 s after the copy when no deadline came (an
+     * older verifier; 120 s in the reference).
+     */
     private static final long VERIFY_TIMEOUT_MS = 110_000;
+    private static final long VERIFY_MARGIN_MS = 10_000;
 
     /** The Windows user folder on the guest side — if folder sharing is enabled. */
     private static final File WINDOWS_USER_FOLDER =
@@ -587,7 +592,7 @@ public final class FileSystemBridge implements ApiChannel.Handler {
      * when the request was not sent or the host did not answer in time).
      */
     boolean verifyPackage(int id, List<ParcelFileDescriptor> apks, String packageName,
-            int versionCode, long longVersionCode, String installer, int sessionId) {
+            int versionCode, long longVersionCode, String installer, int sessionId, long deadline) {
         Slog.i(TAG, "package verification " + id + ": " + packageName + " v" + longVersionCode
                 + ", installer " + installer + ", " + apks.size() + " apk");
         List<File> copies = new ArrayList<>();
@@ -617,7 +622,10 @@ public final class FileSystemBridge implements ApiChannel.Handler {
                     .setActivityId(newActivityId())
                     .setPackageVerificationRequest(req).build().toByteArray(),
                     DETAILS_TIMEOUT_MS);
-            return result.get(VERIFY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            long waitMs = deadline > 0
+                    ? Math.max(1_000, deadline - VERIFY_MARGIN_MS - SystemClock.elapsedRealtime())
+                    : VERIFY_TIMEOUT_MS;
+            return result.get(waitMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
             Slog.e(TAG, "package verification " + id + ": no answer from host, rejecting");
             return false;

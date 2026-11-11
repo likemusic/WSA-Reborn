@@ -8,6 +8,13 @@
     in Play stays without its avatar. Seen on A16 and aosp17-gsi on a clean /data, fixed there by
     pm grant (14.10.2026).
 
+    Location for the same reason: neither that module nor MindTheGapps (GApps 26, 07.11.2026) grants it
+    to GMS, and AOSP grants location by default only to config_locationProviderPackageNames, which no
+    overlay of ours or theirs points at GMS. Without it every app on FusedLocationProviderClient gets
+    no fix at all, not even an error (FLPShim: "uid 10057 does not have any of [ACCESS_FINE_LOCATION,
+    ACCESS_COARSE_LOCATION]"), while LocationManager keeps working; seen on aosp16-vanilla, 09.11.2026.
+    Not fixed, so tests may still revoke them.
+
     Bound to Google's GmsCore certificate; without GApps the exception matches nothing.
     Granted on first boot and on every build fingerprint change
     (PackageManagerService: isPermissionUpgradeNeeded → grantDefaultPermissions).
@@ -18,5 +25,9 @@
         <permission name="android.permission.BLUETOOTH_CONNECT" fixed="false"/>
         <permission name="android.permission.BLUETOOTH_SCAN" fixed="false"/>
         <permission name="android.permission.BLUETOOTH_ADVERTISE" fixed="false"/>
+        <permission name="android.permission.ACCESS_FINE_LOCATION" fixed="false"/>
+        <permission name="android.permission.ACCESS_COARSE_LOCATION" fixed="false"/>
+        <permission name="android.permission.ACCESS_BACKGROUND_LOCATION" fixed="false"/>
+        <permission name="android.permission.ACTIVITY_RECOGNITION" fixed="false"/>
     </exception>
 </exceptions>

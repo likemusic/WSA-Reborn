@@ -15,8 +15,13 @@
         <package android:name="org.wsalineage.shellbridge" />
     </queries>
 
+    <!-- persistent: the verifier waits for the host (the antivirus) inside a binder call to the bridge, and a cached process with
+         an outstanding binder transaction is killed by the freezer ("Kill app due to repeated failure to freeze binder …
+         excessive binder traffic during cached", ~30 s after the broadcast), so verifyPendingInstall was never called
+         and PackageManager rejected on timeout: Standoff 2 (98 MB apk) on 03.11.2026, the host answered "allowed" one
+         second after the kill. A persistent process is never cached. -->
     <application android:label="WSA package verifier" android:allowBackup="false"
-        android:persistent="false">
+        android:persistent="true">
         <receiver
             android:name=".VerificationReceiver"
             android:permission="android.permission.BIND_PACKAGE_VERIFIER"

@@ -464,6 +464,9 @@ done
 
 step "product: privapp, adb_keys"
 printf '\n# WSA path A: Magisk GApps modules put Google apps into /product whose privapp-permissions are not in this image\nro.control_privapp_permissions=disable\n' >> "$P/etc/build.prop"
+# FUSE without BPF: bpfloader of A15+ refuses kernel 5.15.104, vold would skip the Android/obb bind mounts (see
+# device/microsoft/wsa_x86_64/aosp_wsa_x86_64.mk, 03.11.2026).
+printf '\n# WSA: FuseDaemon has no BPF program on kernel 5.15.104, keep vold bind mounts of Android/data and Android/obb\nro.fuse.bpf.enabled=false\n' >> "$P/etc/build.prop"
 mkdir -p "$P/etc/security" && cp "$HOME/.android/adbkey.pub" "$P/etc/security/adb_keys"
 # /product/etc/security/adb_keys is read only by newer adbd (AP4A has it, AP3A does not); /adb_keys in the
 # system root is read by every version and plat_file_contexts labels it adb_keys_file.

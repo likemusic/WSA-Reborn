@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the vendor image of the headless WSA: Microsoft's vendor.vhdx with the four graphics
-# parts swapped in place, so that our own VM (host/host, no virtio-gpu) boots enforcing without any bind mounts.
+# parts swapped in place, so that our own VM (the own host, no virtio-gpu) boots enforcing without any bind mounts.
 #
 #   bin/headless-vendor.sh <vendor.vhdx of an install> <parts dir> <out vendor-headless.vhdx>
 #   bin/headless-vendor.sh /mnt/c/WSA/vendor.vhdx <parts> \

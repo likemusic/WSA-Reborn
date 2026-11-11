@@ -145,6 +145,13 @@ public final class TtsBridge implements ApiChannel.Handler {
             throws ApiChannel.ApiException {
         if (!mChannel.isOpen()) throw new ApiChannel.ApiException("channel not open", ResultCode.NotReady);
         byte[] payload = mChannel.send(msg.build().toByteArray(), timeoutMs);
+        // A Success reply without payload comes back as null (ApiChannel.dispatch). Our own host answers the
+        // TextToSpeech channel that way; parseFrom(null) threw NullPointerException out of
+        // WindowsTtsService.onLoadLanguage and killed the whole bridge process (probe 7, 03.11.2026, when Messenger
+        // asked the TTS engine for a language).
+        if (payload == null) {
+            throw new ApiChannel.ApiException(msg.getMessageType() + ": empty reply", ResultCode.InvalidProtocolFormat);
+        }
         TextToSpeechMessage reply;
         try {
             reply = TextToSpeechMessage.parseFrom(payload);

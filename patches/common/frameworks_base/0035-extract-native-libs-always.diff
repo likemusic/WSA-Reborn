@@ -1,0 +1,54 @@
+# PackageManager: always extract native libraries of apps that are not on the system image (WSA).
+#
+# An ARM-only app installed on this x86_64 device with extractNativeLibs=false keeps its libraries uncompressed in
+# split_config.arm64_v8a.apk and `lib/arm64` stays empty. System.loadLibrary copes (the zip path comes from the linker
+# namespace), but SoLoader, which React Native loads its libraries with, builds its own paths from the device's first
+# ABI: `<apk>!/lib/x86_64`, for every apk including the ARM one, and finds nothing:
+#   SoLoaderDSONotFoundError: couldn't find DSO to load: libreactnative.so ... Native lib dir: .../lib/arm64
+# Extracted libraries are found by SoLoader's ApplicationSoSource in the native library directory. Tesla (rank 96),
+# Revanced (rank 151), 03-04.11.2026; checked first by hand: libraries unzipped into lib/arm64, the app runs.
+#
+# Applies to every app, also x86_64 ones, for simplicity: the price is disk space, the libraries are stored twice. The
+# branch for apps on the system image is kept, /system is read-only.
+#
+# Two places read the flag, both are needed: shouldExtractLibs decides between copying and only finding the ABI, and
+# createNativeLibraryHandle hands it to NativeLibraryHelper.Handle, whose native copy skips uncompressed libraries when
+# it is false (with the first place alone nothing is copied).
+#
+# NOT BUILT (no build machine). Applied in binary form to classes2.dex of services.jar:
+#   bin/dexpatch.sh DropCheckPatch in.dex out.dex 'Lcom/android/server/pm/PackageAbiHelperImpl;' shouldExtractLibs \
+#       isExtractNativeLibrariesRequested
+#   bin/dexpatch.sh ForceCallResultPatch in.dex out.dex 'Lcom/android/server/pm/parsing/pkg/AndroidPackageUtils;' \
+#       createNativeLibraryHandle isExtractNativeLibrariesRequested 1
+# then the jar is repacked with the dex stored and 4-byte aligned, and oat/x86_64/services.{odex,vdex,art} are removed
+# from the image. Without them system_server runs services from dex: the boot time did not change noticeably here.
+#
+# Regression on probe 7, 04.11.2026: WhatsApp, Stickman Hook unchanged. Instagram 454 finishes itself on the first start
+# (WaitingForStringsActivity, "InstagramMainActivity is not the root"), the second start opens; not compared with an
+# image without 0035 on this version.
+#
+# Below: android17-release, the code as read back from the bytecode.
+--- a/services/core/java/com/android/server/pm/PackageAbiHelperImpl.java
++++ b/services/core/java/com/android/server/pm/PackageAbiHelperImpl.java
+@@
+     private boolean shouldExtractLibs(AndroidPackage pkg, boolean isSystemApp,
+             boolean isUpdatedSystemApp) {
+-        boolean extractLibs = !AndroidPackageUtils.isLibrary(pkg)
+-                && pkg.isExtractNativeLibrariesRequested();
++        // WSA: SoLoader cannot read an ARM library from an apk on an x86_64 device. docs/patches/0035.
++        boolean extractLibs = !AndroidPackageUtils.isLibrary(pkg);
+         if (isSystemApp && !isUpdatedSystemApp) {
+             return false;
+         }
+         return extractLibs;
+     }
+--- a/services/core/java/com/android/server/pm/parsing/pkg/AndroidPackageUtils.java
++++ b/services/core/java/com/android/server/pm/parsing/pkg/AndroidPackageUtils.java
+@@
+         return NativeLibraryHelper.Handle.create(
+                 AndroidPackageUtils.getAllCodePaths(pkg),
+                 pkg.isMultiArch(),
+-                pkg.isExtractNativeLibrariesRequested(),
++                true /* WSA: docs/patches/0035 */,
+                 pkg.isDebuggable(),
+                 isPageSizeAppCompatEnabled);

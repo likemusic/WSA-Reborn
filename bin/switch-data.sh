@@ -35,14 +35,25 @@ pool_dir() { echo "$POOL_ROOT/$1"; }
 # memory" (13.10.2026 three times in a row, the live userdata was left half-written), so a failed cp is redone by
 # Windows itself (Copy-Item), and the result is checked by MD5 on the Windows side — cmp over drvfs takes minutes.
 copy_vhdx() {   # <src> <dst>
-    local src=$1 dst=$2 a b
-    cp -f "$src" "$dst" 2>/dev/null || {
+    local src=$1 dst=$2 a b tmp="$2.part"
+    # A truncated vhdx copies with a matching MD5 just as well: on 29.10.2026 the live userdata of pool aosp16 was
+    # 5.7 GB with blocks up to 7.7 GB (WSA refused it, 0x80070570), and saving it overwrote the only good copy. So the
+    # source is checked first, the copy goes to <dst>.part and replaces <dst> only after its MD5 matches.
+    if command -v qemu-img >/dev/null; then
+        qemu-img check -f vhdx "$src" >/dev/null 2>&1 || {
+            echo "source $src is not a sound vhdx (qemu-img check -f vhdx), not copying it — $dst left as it was" >&2; exit 1; }
+    else
+        echo "   warning: no qemu-img, $src copied unchecked" >&2
+    fi
+    rm -f "$tmp"
+    cp -f "$src" "$tmp" 2>/dev/null || {
         echo "   cp over drvfs failed, copying through Windows"
-        powershell.exe -NoProfile -Command "Copy-Item -Force '$(wslpath -w "$src")' '$(wslpath -w "$dst")'" >/dev/null
+        powershell.exe -NoProfile -Command "Copy-Item -Force '$(wslpath -w "$src")' '$(wslpath -w "$tmp")'" >/dev/null
     }
     a=$(powershell.exe -NoProfile -Command "(Get-FileHash -Algorithm MD5 '$(wslpath -w "$src")').Hash" | tr -d '\r')
-    b=$(powershell.exe -NoProfile -Command "(Get-FileHash -Algorithm MD5 '$(wslpath -w "$dst")').Hash" | tr -d '\r')
-    [ -n "$a" ] && [ "$a" = "$b" ] || { echo "copy $src -> $dst does not match (md5 '$a' vs '$b')" >&2; exit 1; }
+    b=$(powershell.exe -NoProfile -Command "(Get-FileHash -Algorithm MD5 '$(wslpath -w "$tmp")').Hash" | tr -d '\r')
+    [ -n "$a" ] && [ "$a" = "$b" ] || { echo "copy $src -> $tmp does not match (md5 '$a' vs '$b'), $dst left as it was" >&2; exit 1; }
+    mv -f "$tmp" "$dst"
 }
 
 # The pool's apps on the Windows side — "Programs and Features" entries and Start menu shortcuts (the registry is one for
@@ -63,15 +74,15 @@ stop_wsa() {
     echo "-- stopping WsaService/WsaClient"
     powershell.exe -NoProfile -Command \
         "Stop-Service WsaService -Force -ErrorAction SilentlyContinue; Stop-Process -Name WsaClient -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
-    local vm=""
-    for _ in $(seq 1 15); do
-        vm="$(powershell.exe -NoProfile -Command "Get-Process vmmemWSA -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id" 2>/dev/null | tr -d '\r')" || true
-        [ -z "$vm" ] && break
+    # Only an explicit answer counts: when WSL interop fails (accept4 failed 110) PowerShell prints nothing, and an
+    # empty answer used to read as "the VM is gone" — the copy then started under a running VM.
+    local st=""
+    for _ in $(seq 1 60); do
+        st="$(powershell.exe -NoProfile -Command "'state=' + (Get-Service WsaService).Status + '/' + (Get-Process vmmemWSA,WsaClient -ErrorAction SilentlyContinue | Measure-Object).Count" 2>/dev/null | tr -d '\r')" || true
+        [ "$st" = "state=Stopped/0" ] && break
         sleep 1
     done
-    if [ -n "$vm" ]; then
-        echo "-- warning: vmmemWSA (pid $vm) is still alive after 15s" >&2
-    fi
+    [ "$st" = "state=Stopped/0" ] || { echo "WSA not confirmed stopped after 60 s (last answer: '${st:-none}'), not copying" >&2; exit 1; }
     # Safety margin: the file is not released immediately after
     # the process disappears from the list.
     sleep 8

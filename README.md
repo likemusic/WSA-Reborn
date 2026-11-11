@@ -32,6 +32,18 @@ Tested on every Win11 x64 asset of WSABuilds LTS #8 (plain, Magisk, Magisk + GAp
 - network, GPS, camera, sound, OpenGL ES 3.0, ARM translation (`libhoudini`, BYOB), VPN, Google sign-in with the usual GApps Magisk module
 - an Android `Geocoder` backed by OpenStreetMap (the stock one is dead: its Azure Maps key was revoked)
 
+## Known limitations
+
+This is a working project, not a finished product. Before you start:
+
+- **No prebuilt images (yet).** You build the system image yourself: a full AOSP/LineageOS tree build (Android 17 wants a machine with ≥ 64 GB RAM), or path A from Google's GSI, which still needs SurfaceFlinger and first-stage `init` from your own build of the same branch. Images without Microsoft, Google and Intel parts plus a script that adds them from your install are planned.
+- **Not yet walked through on a clean Windows.** The install guide has been followed on the development machine only; a run on a fresh Windows in a VM is pending. Expect gaps in [docs/install.md](docs/install.md) and please report them.
+- **The newest fixes are verified in binary form.** Patches `0032`–`0036` (ARM translation on Android 15–17, React Native libraries, a taskbar input crash on Android 16) were verified live by equivalent binary edits of the slots; the diffs have not yet been through a full tree build ([docs/patches.md](docs/patches.md#00320036--added-in-november-2026)).
+- **Not every combination is fully checked.** See the table above: on several bases the #700 checklist has not been run end to end.
+- **App compatibility is not complete.** Some ARM-only apps still crash in the ARM translator (machine-code issues outside the platform); the usual GApps Magisk module ships an old Google Play services that cannot update itself (Android 16+ needs a newer GApps set, GSF 16).
+- **The own host is experimental** ([docs/own-host.md](docs/own-host.md)): Android 16 and 17, rough edges, not a replacement for WSA yet.
+- More, with workarounds: [docs/architecture.md](docs/architecture.md#known-limitations).
+
 ## How it works
 
 WSA's host (`WsaClient.exe`, `WsaService`) talks to the guest over ~26 protobuf "RCM" channels on vsock. On Android 13 the guest side lives in Microsoft's `SystemUIApp`/`UserApp`, which do not run on 14+. WSA-Reborn provides:
@@ -40,7 +52,7 @@ WSA's host (`WsaClient.exe`, `WsaService`) talks to the guest over ~26 protobuf 
 - **platform patches** for AOSP 14–17 (SCSI addressing in `fs_mgr`, SurfaceFlinger layer metadata, compatibility fixes for Microsoft's `SystemApp`, first-stage init on 17, …), each documented with why it is needed and on which versions;
 - **a device tree** (`device/microsoft/wsa_x86_64`) building against Microsoft's VNDK-33 `vendor`;
 - **scripts** to assemble images from your build tree plus components taken from **your own** WSA install, switch between system images ("slots") and `/data` pools, and diagnose boots from host-side logs.
-- **an own host (experimental)** — `host/`, a replacement for `WsaService`/`WsaClient` built from source: the VM through HCS, a window per Android task, input, notifications, clipboard, files, the resources modes of WSA's settings; software rendering for now ([docs/own-host.md](docs/own-host.md));
+- **an own host (experimental)** — `host/`, a replacement for `WsaService`/`WsaClient` built from source: the VM through HCS, a window per Android task, input, notifications, clipboard, files, the resources modes of WSA's settings; software rendering, or the host GPU through gfxstream as an experiment ([docs/own-host.md](docs/own-host.md));
 - **path A without a full image build** (Android 15–17): `bin/build-gsi-slot.sh` turns Google's prebuilt GSI into a slot — the Java fixes as bytecode patches (`bin/dexpatch/`), the two native ones (SurfaceFlinger, first-stage `init`) from your build of the same branch ([docs/build.md](docs/build.md#path-a-a-ready-google-gsi-android-1517));
 
 ## Requirements

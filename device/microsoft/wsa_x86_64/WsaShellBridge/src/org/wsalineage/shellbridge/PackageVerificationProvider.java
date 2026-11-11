@@ -57,7 +57,8 @@ public final class PackageVerificationProvider extends ContentProvider {
         boolean allow = bridge != null && !apks.isEmpty() && bridge.verifyPackage(
                 extras.getInt("id", -1), apks, extras.getString("packageName"),
                 extras.getInt("versionCode", -1), extras.getLong("longVersionCode", -1),
-                extras.getString("installer"), extras.getInt("sessionId", -1));
+                extras.getString("installer"), extras.getInt("sessionId", -1),
+                extras.getLong("deadline", 0));
         Bundle reply = new Bundle();
         reply.putBoolean("allow", allow);
         return reply;

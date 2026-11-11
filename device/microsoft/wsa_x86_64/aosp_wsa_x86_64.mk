@@ -67,6 +67,15 @@ PRODUCT_PRODUCT_PROPERTIES += ro.crypto.metadata_init_delete_all_keys.enabled=fa
 # Microsoft's vendor/build.prop sets `enforce` and is read after system and system_ext, but before product.
 PRODUCT_PRODUCT_PROPERTIES += ro.control_privapp_permissions=disable
 
+# FUSE without BPF (03.11.2026, probe 7 / aosp17-vanilla). bpfloader of A15+ refuses Microsoft's kernel 5.15.104
+# ("Android V+ requires 5.15 kernel to be 5.15.136+"), so MediaProvider's FuseDaemon starts without the fuseMedia
+# program, while vold, seeing /sys/fs/fuse/features/fuse_bpf, takes BPF as running and skips the bind mounts of
+# Android/data and Android/obb: Play (mountMode=INSTALLER) gets "Rejected access to app-private dir on FUSE" and
+# cannot install a game with OBB. With false both sides go without BPF and the bind mounts are back. In product, like
+# the line above: checked live, `getprop ro.fuse.bpf.enabled` false (as root — storage_config_prop), 8 bind mounts,
+# Play wrote the 108 MB OBB of Strawberry Shortcake. A14 not checked (its bpfloader may accept 5.15.104).
+PRODUCT_PRODUCT_PROPERTIES += ro.fuse.bpf.enabled=false
+
 # generic_system_x86_64.mk is only the system part of GSI: no SystemUI, Settings or launcher
 # (the first build on 22.09.2026 produced a 1.3 MB system_ext with just WsaShellBridge). We take from
 # handheld_system_ext.mk / handheld_product.mk exactly what windows and settings need,
