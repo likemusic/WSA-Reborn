@@ -4,6 +4,8 @@ WSA-Reborn replaces the Android 13 guest of Windows Subsystem for Android™ (WS
 
 > **Not affiliated with Microsoft or Google.** Windows and Windows Subsystem for Android are trademarks of Microsoft Corporation. Android is a trademark of Google LLC. This project ships **no Microsoft binaries**: you bring your own WSA installation.
 
+> **Early preview.** Everything here has been tested on the author's machine only; a run on a clean Windows installation is still ahead. Expect rough edges and please report what breaks.
+
 ## Status
 
 | system image | base | security patch | state |
